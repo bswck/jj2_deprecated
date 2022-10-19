@@ -1,4 +1,4 @@
-# PROJECT_NAME
+# jj2
 
 ## ⚙️ Setup
 ## 🚀 How to run
