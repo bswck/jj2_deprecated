@@ -1,5 +1,4 @@
 import datetime
-import operator
 
 from jj2.classes import GameServer, MessageOfTheDay
 from jj2.listservers.db.base import get_session
@@ -66,7 +65,7 @@ def get_server(server_id):
 def get_mirrors():
     with get_session() as session:
         mirrors = session.query(MirrorModel).all()
-    return set(map(operator.attrgetter('address'), mirrors))
+    return {mirror.name: mirror.address for mirror in mirrors}
 
 
 def purge_remote_servers(timeout=40):

@@ -19,7 +19,8 @@ class GameServer:
     serverlist: str = 'localhost'
 
     _servers = {}
-    _RE_PAT = re.compile(
+
+    _ASCIILIST_PATTERN = re.compile(
         r'(?P<ip>\d+\.\d+\.\d+\.\d+):(?P<port>\d+)\s'
         r'(?P<remote>local|mirror)\s'
         r'(?P<private>public|private)\s'
@@ -47,7 +48,7 @@ class GameServer:
 
     @classmethod
     def from_str(cls, string):
-        match = re.fullmatch(cls._RE_PAT, string.strip())
+        match = re.fullmatch(cls._ASCIILIST_PATTERN, string.strip())
         inst = None
         if match:
             inst = cls(**match.groupdict())

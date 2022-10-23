@@ -1,7 +1,7 @@
 from loguru import logger
 
 from jj2.classes import GameServer
-from jj2.networking.server import Connection, Server
+from jj2.networking import Connection, AsyncServer
 from jj2.listservers import db
 
 
@@ -16,7 +16,7 @@ DUMMY_SERVERS = [
 class BinaryListConnection(Connection):
     magic_header = b"\x07LIST\x01\x01"
 
-    async def serve(self):
+    async def run(self):
         logger.info(f"Sending binary server list to {self.ip}")
 
         db.purge_remote_servers()
@@ -31,7 +31,7 @@ class BinaryListConnection(Connection):
         self.kill()
 
 
-class BinaryListServer(Server):
+class BinaryListServer(AsyncServer):
     default_port = 10053
     connection_class = BinaryListConnection
     use_dummy_servers = True

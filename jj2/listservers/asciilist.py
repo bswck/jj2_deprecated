@@ -1,13 +1,13 @@
 from loguru import logger
 
-from jj2.networking.server import Connection, Server
+from jj2.networking import Connection, AsyncServer
 from jj2.listservers import db
 
 
 class ASCIIListConnection(Connection):
     msg_encoding = 'ASCII'
 
-    async def serve(self):
+    async def run(self):
         logger.info(f"Sending ASCII server list to {self.ip}")
 
         db.purge_remote_servers()
@@ -16,6 +16,6 @@ class ASCIIListConnection(Connection):
         self.kill()
 
 
-class ASCIIListServer(Server):
+class ASCIIListServer(AsyncServer):
     default_port = 10057
     connection_class = ASCIIListConnection

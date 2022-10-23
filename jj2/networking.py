@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import typing
 import weakref
 
@@ -23,6 +24,15 @@ class Connection:
             f'{self.ip or "unknown"}:{self.server.port}'
         )
 
+    def sync(self, msg, exclude_self=True):
+        exclude_conns = ()
+        if exclude_self:
+            exclude_conns = self,
+        self.server.sync_pool.sync(msg, *exclude_conns)
+
+    def syncer(self, msg):
+        raise TypeError(f'unknown sync data type {type(msg).__name__!r}')
+
     def send(self, data: bytes):
         self.writer.write(data)
 
@@ -42,13 +52,18 @@ class Connection:
     async def validate(self):
         pass
 
-    async def serve(self):
+    async def run(self):
         pass
+
+    def __init_subclass__(cls):
+        syncer = functools.singledispatchmethod(cls.syncer)
+        syncer.register(cls.send)
+        syncer.register(cls.msg)
 
 
 class ConnectionPool:
     """
-    Connection pool that holds all the connections alive.
+    Connection pool that stores all the connections and also may keep them alive.
     Use it to impose custom behavior on all of them across many various servers,
     e.g. for setting timeout on each.
     """
@@ -61,6 +76,14 @@ class ConnectionPool:
         self.future.add_done_callback(self.on_closed)
         self.tasks = []
         self.connections = weakref.WeakSet()
+
+    def sync(self, msg, *exclude_conns):
+        connections = self.connections[:]
+        if exclude_conns:
+            for excluded_conn in exclude_conns:
+                connections.discard(excluded_conn)
+        for connection in connections:
+            connection.syncer(msg)
 
     def cancel_pending(self):
         self.future.cancel()
@@ -83,7 +106,7 @@ class ConnectionPool:
         self.connections.add(connection)
 
         while not (self.future.done() or self.future.cancelled()):
-            await connection.serve()
+            await connection.run()
             if not connection.is_alive:
                 self.connections.remove(connection)
                 return
@@ -105,30 +128,47 @@ class ConnectionPool:
         )
 
 
-class Server:
+class AsyncEndpoint:
     default_port = None
     connection_class = Connection
+    pool_class = ConnectionPool
+    sync_pool_class = pool_class
 
     def __init__(
         self,
         host,
         port=None,
         pool=None,
+        sync_pool=None,
         connection_class=None,
-        **kwds
+        **endpoint_args
     ):
         self.host = host
         self.port = port or self.default_port
 
         if pool is None:
-            pool = ConnectionPool()
-
+            pool = self.pool_class()
         self.pool = pool
+
+        if sync_pool is None:
+            sync_pool = self.sync_pool_class()
+        self.sync_pool = sync_pool
+
         self.connection_class = connection_class or self.connection_class
         self.connections = []
-        self._server = None
-        self.is_ssl = kwds.get('ssl_context') is not None
-        self.kwds = kwds
+        self.endpoint_args = endpoint_args
+
+        self._endpoint = None
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.get_event_loop()
+        self.loop = loop
+
+    @property
+    def is_ssl(self):
+        return self.endpoint_args.get('ssl_context') is not None
 
     def connection(self, reader, writer):
         connection = self.connection_class(self, reader, writer)
@@ -136,13 +176,30 @@ class Server:
         return connection
 
     def start(self):
-        self._server = asyncio.start_server(
+        self._endpoint = self.create_endpoint()
+
+    def stop(self):
+        if self._endpoint:
+            self.pool.cancel()
+
+    def create_endpoint(self):
+        raise NotImplementedError
+
+
+class AsyncServer(AsyncEndpoint):
+    def create_endpoint(self):
+        return asyncio.start_server(
             self.pool.connection_callback(self),
             host=self.host,
             port=self.port,
-            **self.kwds
+            **self.endpoint_args
         )
 
-    def stop(self):
-        if self._server:
-            self.pool.cancel()
+
+class AsyncClient(AsyncEndpoint):
+    def create_endpoint(self):
+        return asyncio.open_connection(
+            host=self.host,
+            port=self.port,
+            **self.endpoint_args
+        )
