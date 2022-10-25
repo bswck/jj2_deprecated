@@ -28,13 +28,13 @@ class SettingModel(Base):
     __tablename__ = 'settings'
 
     item = Column(Text, primary_key=True)
-    value = Column(Text)
+    value = Column(Text, primary_key=True)
 
 
-class BanModel(Base):
+class BanlistEntryModel(Base):
     __tablename__ = 'banlist'
     address = Column(Text, primary_key=True)
-    type = Column(Text)
+    type = Column(Text, primary_key=True)
     note = Column(Text)
     origin = Column(Text)
     reserved = Column(Text, server_default='')
@@ -42,6 +42,6 @@ class BanModel(Base):
 
 class MirrorModel(Base):
     __tablename__ = 'mirrors'
-    name = Column(Text)
+    name = Column(Text, primary_key=True)
     address = Column(Text, primary_key=True)
-    lifesign = Column(Integer, server_default=text('0'))
+    lifesign = Column(Integer, server_default=text('0'), primary_key=True)

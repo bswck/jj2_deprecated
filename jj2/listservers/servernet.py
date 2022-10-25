@@ -1,13 +1,15 @@
+import contextvars
 import dataclasses
+import inspect
 import json
 import typing
-import weakref
 
 import blinker
 from loguru import logger
 
+from jj2.classes import BanlistEntry
 from jj2.listservers import db
-from jj2.networking import Connection, AsyncServer
+from jj2.aiolib import AsyncConnection, AsyncServer
 
 
 @dataclasses.dataclass
@@ -25,23 +27,24 @@ class RPC:
             raise ValueError('invalid ServerNet RPC request')
 
 
-class ServerNetConnection(Connection):
-    rpc = blinker.Namespace()
+class ServerNetConnection(AsyncConnection):
+    rpc_ns = blinker.Namespace()
     rpc_class = RPC
+    _rpc_var = contextvars.ContextVar('_rpc_var', default=None)
+    _rpc_chunk = contextvars.ContextVar('_rpc_chunk', default={})
 
     decode_payload = staticmethod(json.loads)
     encode_payload = staticmethod(json.dumps)
 
     MAX_READ_ATTEMPTS = 11
     PAYLOAD_KEYS = {'action', 'data', 'origin'}
-    UNSYNCED_REQS = {"hello", "request", "delist", "request-log", "send-log", "request-log-from"}
+    UNSYNCED_REQS = {'hello', 'request', 'delist', 'request-log', 'send-log', 'request-log-from'}
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.buffer = bytearray()
         self.read_attempts = 0
-        self.rpc = None
-        self.sync_chunks = weakref.WeakSet()
+        self.sync_chunks = set()
 
     async def validate(self):
         if self.server.is_ssl:
@@ -50,11 +53,27 @@ class ServerNetConnection(Connection):
                 self.kill()
         elif (
             self.ip not in db.get_mirrors().values()
-            or self.ip.is_localhost
+            or self.is_localhost
         ):
             logger.warning(f'Unauthorized ServerNet connection from {self.ip}:{self.server.port}')
             self.kill()
         db.update_lifesign(self.ip)
+
+    @property
+    def ctx(self):
+        return self._rpc_chunk.get()
+
+    @ctx.setter
+    def ctx(self, data):
+        self._rpc_chunk.set(data)
+
+    @property
+    def rpc(self) -> RPC | None:
+        return self._rpc_var.get()
+
+    @rpc.setter
+    def rpc(self, rpc):
+        self._rpc_var.set(rpc)
 
     @property
     def should_sync(self):
@@ -80,12 +99,12 @@ class ServerNetConnection(Connection):
         payload = None
         if not self.rpc:
             try:
-                payload = self.decode_payload(self.buffer.decode(self.msg_encoding, 'ignore'))
+                payload = self.decode_payload(self.buffer.decode(self.MSG_ENCODING, 'ignore'))
             except ValueError:
                 pass
         return payload
 
-    def deduce_rpc(self, payload):
+    def make_rpc(self, payload):
         if self.buffer and not payload:
             logger.error(
                 f'ServerNet update received from {self.ip}, '
@@ -119,7 +138,7 @@ class ServerNetConnection(Connection):
         if self.read_attempts > self.MAX_READ_ATTEMPTS:
             return self.kill()
         if payload:
-            self.deduce_rpc(payload)
+            self.make_rpc(payload)
         if self.rpc:
             try:
                 self.dispatch_rpc()
@@ -129,8 +148,8 @@ class ServerNetConnection(Connection):
     def dispatch_rpc(self):
         sender = type(self)
         action_name = self.rpc.action
-        for chunk in self.rpc.data:
-            signal = self.rpc.signal(action_name)
+        for chunk in self.ctx:
+            signal = self.rpc_ns.signal(action_name)
             signal.send(sender, **chunk)
         if self.sync_chunks:
             self.sync_rpc()
@@ -153,129 +172,167 @@ class ServerNet(AsyncServer):
     connection_class = ServerNetConnection
 
 
-def renamed_params(**arg_map):
+def rename_params(**arg_map):
     return lambda chunk: {
         arg_map.get(key, key): value
         for key, value in chunk
     }
 
 
-def action(command_name, chunk_mapper=None):
+def gather_to_obj(cls, arg_name, *arg_list, **arg_mappers):
+    if not (*arg_list, *arg_mappers):
+        arg_list = list(inspect.signature(cls).parameters)
+    return lambda chunk: {
+        arg_name: cls(**{
+            arg: (mapper(arg) if mapper else arg)
+            for arg, mapper
+            in {**dict.fromkeys(arg_list, None), **arg_mappers}
+        })
+    }
+
+
+def gather(**args_to_objects):
+    return [
+        gather_to_obj(
+            (cls_args := cls if isinstance(cls, list) else [cls])[0],
+            arg_name, *cls_args[1:] if cls_args else []
+        )
+        for arg_name, cls
+        in args_to_objects.items()
+    ]
+
+
+_ORIG_FUNC_ATTR = 'func'
+
+
+def callback(command_name, mappers=None):
     def command_decorator(func):
-        def func_wrapper(connection, /, _map_args=True, **chunk):
-            if callable(chunk_mapper):
-                chunk = chunk_mapper(chunk)
-            should_sync = func(connection, **chunk)
+        def func_wrapper(connection, /, **ctx):
+            connection.ctx = ctx
+            arg_mappers = mappers if isinstance(mappers, typing.Iterable) else [mappers]
+            for mapper in filter(callable, arg_mappers):
+                ctx = mapper(ctx)
+            should_sync = func(connection, **ctx)
             if should_sync:
-                connection.sync_chunks.add(chunk)
+                updated_ctx = connection.ctx
+                connection.sync_chunks.add(updated_ctx)
             return should_sync
 
         wrapper = (
             ServerNetConnection
-            .rpc.signal(command_name)
+            .rpc_ns.signal(command_name)
             .connect(func_wrapper)
         )
-        wrapper.func = func
+        setattr(wrapper, _ORIG_FUNC_ATTR, func)
         return wrapper
 
     return command_decorator
 
 
-@action('server', renamed_params(server_id='id'))
-def on_server(connection, server_id=None, **data):
+def unwrap_callback(func):
+    while unwrapped := getattr(func, _ORIG_FUNC_ATTR, None):
+        func = unwrapped
+    return func
+
+
+def call_unsynced(cb, *args, **kwargs):
+    return unwrap_callback(cb)(*args, **kwargs)
+
+
+@callback('server', rename_params(server_id='id'))
+def on_server(connection, server_id=None):
     if server_id is None:
         logger.error(
             f'Received incomplete server data '
             f'from ServerNet connection {connection.ip}'
         )
         return False
-    data.update(remote=1)
-    db.update_server(server_id, **data)
+    connection.ctx.update(remote=1)
+    db.update_server(server_id, **connection.ctx)
     return True
 
 
-@action('add-banlist', renamed_params(banlist_type='type'))
-def on_add_banlist(connection, address, banlist_type, note, origin, reserved):
+@callback('add-banlist', gather(entry=BanlistEntry))
+def on_add_banlist(connection, entry):
     pass
 
 
-@action('delete-banlist')
+@callback('delete-banlist', gather(entry=BanlistEntry))
 def on_delete_banlist(connection):
     pass
 
 
-@action('delist')
+@callback('delist')
 def on_delist(connection):
     pass
 
 
-@action('add-mirror')
+@callback('add-mirror')
 def on_add_mirror(connection):
     pass
 
 
-@action('delete-mirror')
+@callback('delete-mirror')
 def on_delete_mirror(connection):
     pass
 
 
-@action('send-motd')
+@callback('send-motd')
 def on_set_motd(connection):
     pass
 
 
-@action('request')
+@callback('request')
 def on_request(connection):
     pass
 
 
-@action('hello')
+@callback('hello')
 def on_hello(connection):
+    call_unsynced(on_request, connection)
 
-    on_request.func(connection)
 
-
-@action('request-log')
+@callback('request-log')
 def on_request_log(connection):
     pass
 
 
-@action('request-log-from')
+@callback('request-log-from')
 def on_request_log_from(connection):
     pass
 
 
-@action('send-log')
+@callback('send-log')
 def on_send_log(connection):
     pass
 
 
-@action('reload')
+@callback('reload')
 def on_reload(connection):
     pass
 
 
-@action('get-servers')
+@callback('get-servers')
 def on_get_servers(connection):
     pass
 
 
-@action('get-banlist')
+@callback('get-banlist')
 def on_get_banlist(connection):
     pass
 
 
-@action('get-motd')
+@callback('get-motd')
 def on_get_motd(connection):
     pass
 
 
-@action('get-motd-expires')
+@callback('get-motd-expires')
 def on_get_motd_expires(connection):
     pass
 
 
-@action('get-mirrors')
+@callback('get-mirrors')
 def on_get_mirrors(connection):
     mirrors = db.get_mirrors()
     payload = connection.encode_payload([
@@ -286,6 +343,6 @@ def on_get_mirrors(connection):
     return True
 
 
-@action('ping')
+@callback('ping')
 def on_ping(_connection):
     return False

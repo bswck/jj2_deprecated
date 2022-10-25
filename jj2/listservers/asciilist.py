@@ -1,11 +1,11 @@
 from loguru import logger
 
-from jj2.networking import Connection, AsyncServer
+from jj2.aiolib import AsyncConnection, AsyncServer
 from jj2.listservers import db
 
 
-class ASCIIListConnection(Connection):
-    msg_encoding = 'ASCII'
+class ASCIIListConnection(AsyncConnection):
+    MSG_ENCODING = 'ASCII'
 
     async def run(self):
         logger.info(f"Sending ASCII server list to {self.ip}")

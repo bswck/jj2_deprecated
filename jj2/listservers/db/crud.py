@@ -1,8 +1,11 @@
 import datetime
 
-from jj2.classes import GameServer, MessageOfTheDay
+from jj2.classes import GameServer
+from jj2.classes import MessageOfTheDay
+from jj2.classes import BanlistEntry
 from jj2.listservers.db.base import get_session
 
+from jj2.listservers.db.models import BanlistEntryModel
 from jj2.listservers.db.models import ServerModel
 from jj2.listservers.db.models import SettingModel
 from jj2.listservers.db.models import MirrorModel
@@ -60,6 +63,21 @@ def get_server(server_id):
         return GameServer.from_orm(
             session.get(ServerModel, server_id)
         )
+
+
+def get_banlist_entries(**filter_by_args):
+    with get_session() as session:
+        return [
+            BanlistEntry(**entry._mapping)
+            for entry in session.query(
+                BanlistEntryModel
+            ).filter_by(**filter_by_args).all()
+        ]
+
+
+def get_banlist_entry(**filter_by_args):
+    entries = get_banlist_entries(**filter_by_args)
+    return entries[0] if entries else None
 
 
 def get_mirrors():

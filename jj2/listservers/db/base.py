@@ -2,6 +2,8 @@ import contextlib
 import os
 import traceback
 
+from loguru import logger
+
 from sqlalchemy import create_engine
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.declarative import declarative_base
@@ -29,6 +31,7 @@ def get_session(session_factory=None) -> Session:
     try:
         yield wrapped_session
     except SQLAlchemyError:
+        logger.exception("Exception occured")
         traceback.print_exc()
 
     else:

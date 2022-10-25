@@ -98,3 +98,12 @@ class MessageOfTheDay:
         if self.text and datetime.datetime.utcnow() < self.expires:
             return ''
         return self.text + '\n'
+
+
+@dataclasses.dataclass
+class BanlistEntry:
+    address: str
+    type: str
+    note: str
+    origin: str
+    reserved: str

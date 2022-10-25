@@ -1,7 +1,7 @@
 from loguru import logger
 
 from jj2.classes import GameServer
-from jj2.networking import Connection, AsyncServer
+from jj2.aiolib import AsyncConnection, AsyncServer
 from jj2.listservers import db
 
 
@@ -13,7 +13,7 @@ DUMMY_SERVERS = [
 ]
 
 
-class BinaryListConnection(Connection):
+class BinaryListConnection(AsyncConnection):
     magic_header = b"\x07LIST\x01\x01"
 
     async def run(self):

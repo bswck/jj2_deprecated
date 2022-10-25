@@ -4,8 +4,13 @@ import typing
 import weakref
 
 
-class Connection:
-    msg_encoding = 'CP1250'
+class AsyncConnection:
+    """
+    Object that stores all the connection-related data and implements behaviour.
+    Store
+    """
+    MSG_ENCODING = 'CP1250'
+    IP_DEFAULT = 'unknown'
 
     def __init__(self, server, reader, writer):
         sockname = (
@@ -18,11 +23,22 @@ class Connection:
         self.server = server
         self.reader = reader
         self.writer = writer
+
         self.is_alive = True
 
-        self.address = (
-            f'{self.ip or "unknown"}:{self.server.port}'
-        )
+        self.address = ':'.join((
+            self.ip or self.IP_DEFAULT,
+            str(self.server.port)
+        ))
+
+    def __init_subclass__(cls):
+        syncer = functools.singledispatchmethod(cls.syncer)
+        syncer.register(cls.send)
+        syncer.register(cls.msg)
+
+    @property
+    def is_localhost(self):
+        return self.ip.lower() in ("127.0.0.1", "localhost", self.server.host)
 
     def sync(self, msg, exclude_self=True):
         exclude_conns = ()
@@ -37,7 +53,7 @@ class Connection:
         self.writer.write(data)
 
     def msg(self, string: str):
-        self.send(string.encode(self.msg_encoding))
+        self.send(string.encode(self.MSG_ENCODING))
 
     def recv(self, n: int = -1):
         self.reader.read(n)
@@ -45,23 +61,14 @@ class Connection:
     def kill(self):
         self.is_alive = False
 
-    @property
-    def is_localhost(self):
-        return self.ip.lower() in ("127.0.0.1", "localhost", self.server.host)
-
     async def validate(self):
         pass
 
     async def run(self):
         pass
 
-    def __init_subclass__(cls):
-        syncer = functools.singledispatchmethod(cls.syncer)
-        syncer.register(cls.send)
-        syncer.register(cls.msg)
 
-
-class ConnectionPool:
+class AsyncConnectionPool:
     """
     Connection pool that stores all the connections and also may keep them alive.
     Use it to impose custom behavior on all of them across many various servers,
@@ -130,8 +137,8 @@ class ConnectionPool:
 
 class AsyncEndpoint:
     default_port = None
-    connection_class = Connection
-    pool_class = ConnectionPool
+    connection_class = AsyncConnection
+    pool_class = AsyncConnectionPool
     sync_pool_class = pool_class
 
     def __init__(
@@ -159,12 +166,8 @@ class AsyncEndpoint:
         self.endpoint_args = endpoint_args
 
         self._endpoint = None
-
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = asyncio.get_event_loop()
-        self.loop = loop
+        self._loop = None
+        self._future = None
 
     @property
     def is_ssl(self):
@@ -175,12 +178,24 @@ class AsyncEndpoint:
         self.connections.append(connection)
         return connection
 
-    def start(self):
+    def start(self, blocking=True):
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.get_event_loop()
+        self._loop = loop
         self._endpoint = self.create_endpoint()
+
+        self._future = loop.create_future()
+
+        if blocking:
+            loop.run_until_complete(self._future)
 
     def stop(self):
         if self._endpoint:
+            self._future.cancel()
             self.pool.cancel()
+            self._endpoint = None
 
     def create_endpoint(self):
         raise NotImplementedError
