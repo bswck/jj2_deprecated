@@ -164,20 +164,17 @@ class ServerNetConnection(AsyncConnection):
         for chunk in self.ctx:
             signal = self.rpc_ns.signal(action_name)
             signal.send(sender, **chunk)
-        if self.sync_chunks:
+        if self.can_sync:
             self.sync_rpc()
 
     def sync_rpc(self):
-        if not self.can_sync:
-            return
-        if self.can_sync:
-            rpc = self.rpc_class(
-                action=self.rpc.action,
-                data=list(self.sync_chunks),
-                origin=self.ip
-            )
-            payload = self.encode_payload(rpc)
-            self.sync(payload)
+        rpc = self.rpc_class(
+            action=self.rpc.action,
+            data=list(self.sync_chunks),
+            origin=self.ip
+        )
+        payload = self.encode_payload(rpc)
+        self.sync(payload)
 
 
 class ServerNet(AsyncServer):
