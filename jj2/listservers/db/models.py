@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Text, Integer, text
 
-from jj2.listservers.db.base import Base
+from jj2.listservers.db.setup import Base
 
 
 class ServerModel(Base):
@@ -28,7 +28,7 @@ class SettingModel(Base):
     __tablename__ = 'settings'
 
     item = Column(Text, primary_key=True)
-    value = Column(Text, primary_key=True)
+    value = Column(Text)
 
 
 class BanlistEntryModel(Base):

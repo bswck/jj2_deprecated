@@ -20,7 +20,7 @@ class GameServer:
 
     _servers = {}
 
-    _ASCIILIST_PATTERN = re.compile(
+    _ASCIILIST_REPR_PATTERN = re.compile(
         r'(?P<ip>\d+\.\d+\.\d+\.\d+):(?P<port>\d+)\s'
         r'(?P<remote>local|mirror)\s'
         r'(?P<private>public|private)\s'
@@ -38,24 +38,8 @@ class GameServer:
         cls._servers[ip] = inst
         return inst
 
-    def __bytes__(self):
-        return bytes([
-            len(self.name) + 7,
-            *reversed(*map(int, self.ip.split('.'))),
-            self.port.to_bytes(2, byteorder='little'),
-            self.name.encode('ascii', 'ignore')
-        ])
-
     @classmethod
-    def from_str(cls, string):
-        match = re.fullmatch(cls._ASCIILIST_PATTERN, string.strip())
-        inst = None
-        if match:
-            inst = cls(**match.groupdict())
-        return inst
-
-    @classmethod
-    def from_orm(cls, model):
+    def from_orm(cls, model, serverlist=None):
         inst = None
         if model:
             inst = cls(
@@ -70,9 +54,21 @@ class GameServer:
                 max=model.max,
                 name=model.name,
             )
+        if serverlist:
+            inst.serverlist = serverlist
         return inst
 
-    def __str__(self):
+    @property
+    def binarylist_repr(self):
+        return bytes([
+            len(self.name) + 7,
+            *reversed(*map(int, self.ip.split('.'))),
+            self.port.to_bytes(2, byteorder='little'),
+            self.name.encode('ascii', 'ignore')
+        ])
+
+    @property
+    def asciilist_repr(self):
         uptime = (
             datetime.datetime.utcnow()
             - datetime.datetime.utcfromtimestamp(self.created)
@@ -87,6 +83,14 @@ class GameServer:
             f'[{self.players}/{self.max}] '
             f'{self.name}\r\n'
         )
+
+    @classmethod
+    def from_asciilist_repr(cls, string):
+        match = re.fullmatch(cls._ASCIILIST_REPR_PATTERN, string.strip())
+        inst = None
+        if match:
+            inst = cls(**match.groupdict())
+        return inst
 
 
 @dataclasses.dataclass

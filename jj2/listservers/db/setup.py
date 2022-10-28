@@ -1,4 +1,5 @@
 import contextlib
+import contextvars
 import os
 import traceback
 
@@ -20,26 +21,31 @@ SessionLocal = sessionmaker(bind=engine)
 
 Base = declarative_base()
 
+_cur_session = contextvars.ContextVar('_cur_session')
+
 
 @contextlib.contextmanager
-def get_session(session_factory=None) -> Session:
+def get_session(session_factory=None, autocommit=False) -> Session:
     if session_factory is None:
         session_factory = SessionLocal
 
-    wrapped_session = session_factory()
+    try:
+        wrapped_session = _cur_session.get()
+    except LookupError:
+        wrapped_session = None
+
+    if wrapped_session is None:
+        wrapped_session = session_factory()
+        _cur_session.set(wrapped_session)
 
     try:
         yield wrapped_session
+        if autocommit:
+            wrapped_session.commit()
     except SQLAlchemyError:
+        wrapped_session.rollback()
         logger.exception("Exception occured")
         traceback.print_exc()
-
-    else:
-        try:
-            wrapped_session.commit()
-        except SQLAlchemyError:
-            wrapped_session.rollback()
-            traceback.print_exc()
-
     finally:
         wrapped_session.close()
+        _cur_session.set(None)

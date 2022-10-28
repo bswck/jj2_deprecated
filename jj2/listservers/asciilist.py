@@ -11,8 +11,8 @@ class ASCIIListConnection(AsyncConnection):
         logger.info(f"Sending ASCII server list to {self.ip}")
 
         db.purge_remote_servers()
-        servers = db.get_servers()
-        self.msg("".join(str(server) for server in servers))
+        servers = db.get_servers(bind_serverlist=self.server.ip)
+        self.msg("".join(server.asciilist_repr for server in servers))
         self.kill()
 
 

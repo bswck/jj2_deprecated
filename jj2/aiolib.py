@@ -129,7 +129,7 @@ class AsyncConnectionPool:
             task = loop.create_task(task)
         self.tasks.append(task)
 
-    def connection_callback(self, server):
+    def server_connection_callback(self, server):
         return lambda reader, writer: self.task(
             self.on_connection(server, reader, writer)
         )
@@ -161,7 +161,9 @@ class AsyncEndpoint:
             sync_pool = self.sync_pool_class()
         self.sync_pool = sync_pool
 
-        self.connection_class = connection_class or self.connection_class
+        self.connection_class = (
+            connection_class or self.connection_class
+        )
         self.connections = []
         self.endpoint_args = endpoint_args
 
@@ -204,7 +206,7 @@ class AsyncEndpoint:
 class AsyncServer(AsyncEndpoint):
     def create_endpoint(self):
         return asyncio.start_server(
-            self.pool.connection_callback(self),
+            self.pool.server_connection_callback(self),
             host=self.host,
             port=self.port,
             **self.endpoint_args

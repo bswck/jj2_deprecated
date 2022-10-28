@@ -23,10 +23,10 @@ class BinaryListConnection(AsyncConnection):
         servers = []
         if self.server.use_dummy_servers:
             servers.extend(DUMMY_SERVERS)
-        servers.extend(db.get_servers(vanilla=True))
+        servers.extend(db.get_servers(vanilla=True, bind_serverlist=self.server.ip))
         self.send(
             self.magic_header
-            + b"".join(map(bytes, servers))
+            + b"".join(server.binarylist_repr for server in servers)
         )
         self.kill()
 
