@@ -234,8 +234,6 @@ def callback(action, mappers=None, func=_FUNC_MISSING, *, sync=None):
                 updated_ctx = connection.ctx
                 connection.sync_chunks.add(updated_ctx)
 
-            return do_sync
-
         wrapper = (
             ServerNetConnection
             .rpc_ns.signal(action)
