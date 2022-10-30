@@ -1,3 +1,5 @@
 sqlalchemy~=1.4.41
 blinker~=1.5
 loguru~=0.6.0
+construct~=2.10.68
+setuptools~=60.2.0
