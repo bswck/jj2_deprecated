@@ -32,8 +32,8 @@ __all__ = (
     'read_motd',
 )
 
-# Servers
 
+# Servers
 
 def read_servers(
     vanilla: 'bool' = False,
@@ -247,8 +247,3 @@ def read_motd(motd_cls: 'type[MessageOfTheDay] | None' = MessageOfTheDay):
     if motd_cls:
         return MessageOfTheDay(text, expires)
     return model, expires_model
-
-
-def update_motd(motd_text):
-    with get_session() as session:
-        session
