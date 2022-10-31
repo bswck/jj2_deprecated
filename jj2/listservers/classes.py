@@ -20,63 +20,27 @@ class GameServer:
     private: bool = False
     mode: str = 'capture'
     version: str = '1.24'
-    listed_at: datetime.datetime | None = None
-    clients: int | None = None
-    max_clients: int | None = None
-    listserver: str | None = None
-    plus_version: str | None = None
+    listed_at: 'datetime.datetime | None' = None
+    clients: 'int | None' = None
+    max_clients: 'int | None' = None
+    listserver: 'str | None' = None
+    plus_version: 'str | None' = None
     isolated: bool = False
-
-    _servers: 'ClassVar[dict[Hashable, GameServer]]' = {}
-
-    _ASCIILIST_REPR_PATTERN: re.Pattern = re.compile(
-        r'(?P<ip>[\dabcdef:.]+):(?P<port>\d+)\s'
-        r'(?P<remote>local|mirror)\s'
-        r'(?P<private>public|private)\s'
-        r'(?P<mode>\w+)\s'
-        r'(?P<version>.{6})\s'
-        r'(?P<uptime>\d+)\s'
-        r'\[(?P<clients>\d+)/(?P<max_clients>\d+)]\s'
-        r'(?P<name>.+)(\r\n)?'
-    )
-
-    _IPV4_BINARYLIST_REPR_PATTERN: cs.Construct = cs.Struct(
-        ip=cs.ByteSwapped(cs.Bytes(4)),
-        port=cs.Int16ul,
-        name=cs.ExprValidator(cs.GreedyBytes, lambda obj, ctx: obj.isascii()),
-    )
-
-    _IPV6_BINARYLIST_REPR_PATTERN: cs.Construct = cs.Struct(
-        ip=cs.ByteSwapped(cs.Bytes(16)),
-        port=cs.Int16ul,
-        name=cs.ExprValidator(cs.GreedyBytes, lambda obj, ctx: obj.isascii()),
-    )
-
-    _BINARYLIST_REPR_PATTERN: cs.Construct = cs.Select(
-        cs.Prefixed(cs.Byte, _IPV4_BINARYLIST_REPR_PATTERN, includelength=True),
-        cs.Prefixed(cs.Byte, _IPV6_BINARYLIST_REPR_PATTERN, includelength=True),
-    )
-
-    @classmethod
-    def get_instance_key(cls, ip, port=DEFAULT_GAME_SERVER_PORT, *_args, **_kwargs) -> 'Hashable':
-        """Get this instance's key for lookup."""
-        ip = ipaddress.ip_address(ip).compressed
-        return sys.intern(f'{ip}:{port}')
 
     def __init__(
         self,
         address: str | int | bytes | ipaddress.IPv4Address | ipaddress.IPv6Address,
         port: int = DEFAULT_GAME_SERVER_PORT, *,
-        name: str | None = None,
-        remote: bool | None = None,
-        private: bool | None = None,
-        mode: str | None = None,
-        version: str | None = None,
-        listed_at: datetime.datetime | None = None,
-        clients: int | None = None,
-        max_clients: int | None = None,
-        listserver: str | None = None,
-        plus_version: str | None = None,
+        name: 'str | None' = None,
+        remote: 'bool | None' = None,
+        private: 'bool | None' = None,
+        mode: 'str | None' = None,
+        version: 'str | None' = None,
+        listed_at: 'datetime.datetime | None' = None,
+        clients: 'int | None' = None,
+        max_clients: 'int | None' = None,
+        listserver: 'str | None' = None,
+        plus_version: 'str | None' = None,
         isolated: bool = False,
     ):
         """
@@ -138,6 +102,14 @@ class GameServer:
         if max_clients is not None:
             self.max_clients = max_clients
 
+    @classmethod
+    def get_instance_key(cls, ip, port=DEFAULT_GAME_SERVER_PORT, *_args, **_kwargs) -> 'Hashable':
+        """Get this instance's key for lookup."""
+        ip = ipaddress.ip_address(ip).compressed
+        return sys.intern(f'{ip}:{port}')
+
+    _servers: 'ClassVar[dict[Hashable, GameServer]]' = {}
+
     def __new__(cls, *args, isolated: bool = False, **kwargs) -> 'GameServer':
         key = cls.get_instance_key(*args, **kwargs)
         if not isolated and key in cls._servers:
@@ -146,6 +118,34 @@ class GameServer:
         if not isolated:
             cls._servers[key] = inst
         return inst
+
+    _ASCIILIST_REPR_PATTERN: re.Pattern = re.compile(
+        r'(?P<ip>[\dabcdef:.]+):(?P<port>\d+)\s'
+        r'(?P<remote>local|mirror)\s'
+        r'(?P<private>public|private)\s'
+        r'(?P<mode>\w+)\s'
+        r'(?P<version>.{6})\s'
+        r'(?P<uptime>\d+)\s'
+        r'\[(?P<clients>\d+)/(?P<max_clients>\d+)]\s'
+        r'(?P<name>.+)(\r\n)?'
+    )
+
+    _IPV4_BINARYLIST_REPR_PATTERN: cs.Construct = cs.Struct(
+        ip=cs.ByteSwapped(cs.Bytes(4)),
+        port=cs.Int16ul,
+        name=cs.ExprValidator(cs.GreedyBytes, lambda obj, ctx: obj.isascii()),
+    )
+
+    _IPV6_BINARYLIST_REPR_PATTERN: cs.Construct = cs.Struct(
+        ip=cs.ByteSwapped(cs.Bytes(16)),
+        port=cs.Int16ul,
+        name=cs.ExprValidator(cs.GreedyBytes, lambda obj, ctx: obj.isascii()),
+    )
+
+    _BINARYLIST_REPR_PATTERN: cs.Construct = cs.Select(
+        cs.Prefixed(cs.Byte, _IPV4_BINARYLIST_REPR_PATTERN, includelength=True),
+        cs.Prefixed(cs.Byte, _IPV6_BINARYLIST_REPR_PATTERN, includelength=True),
+    )
 
     @property
     def binarylist_repr(self) -> bytes:

@@ -16,7 +16,7 @@ DUMMY_SERVERS = (
 class BinaryListConnection(Connection):
     payload_header = b"\x07LIST\x01\x01"
 
-    async def _cycle(self):
+    async def run_once(self, pool=None):
         logger.info(f"Sending binary server list to {self.address}")
 
         db.delete_remote_servers()

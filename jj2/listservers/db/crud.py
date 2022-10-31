@@ -38,8 +38,8 @@ __all__ = (
 def read_servers(
     vanilla: bool = False,
     mirror: bool = False,
-    bind_listserver: str | None = None,
-    server_cls: type[GameServer] | None = GameServer,
+    bind_listserver: 'str | None' = None,
+    server_cls: 'type[GameServer] | None' = GameServer,
 ):
     with get_session() as session:
         query = session.query(ServerModel)
@@ -99,8 +99,8 @@ def server_from_model(server_model, server_cls=GameServer, bind_listserver=None)
 
 def read_server(
     server_id,
-    server_cls: type[GameServer] | None = GameServer,
-    bind_serverlist: str | None = None
+    server_cls: 'type[GameServer] | None' = GameServer,
+    bind_serverlist: 'str | None' = None
 ):
     with get_session() as session:
         server_model = session.get(ServerModel, server_id)
@@ -145,7 +145,7 @@ def create_mirror(name, address):
         session.commit()
 
 
-def read_mirror(name, address, mirror_cls: type[Mirror] | None = Mirror):
+def read_mirror(name, address, mirror_cls: 'type[Mirror] | None' = Mirror):
     with get_session() as session:
         mirror_model = session.get(MirrorModel, [name, address])
     ret = None
@@ -157,7 +157,7 @@ def read_mirror(name, address, mirror_cls: type[Mirror] | None = Mirror):
     return ret
 
 
-def read_mirrors(mirror_cls: type[Mirror] | None = Mirror):
+def read_mirrors(mirror_cls: 'type[Mirror] | None' = Mirror):
     with get_session() as session:
         mirror_models = session.query(MirrorModel).all()
     return [
@@ -200,7 +200,7 @@ def create_banlist_entry(**model_args):
 
 
 def read_banlist_entries(
-    *, entry_cls: type[BanlistEntry] | None = BanlistEntry,
+    *, entry_cls: 'type[BanlistEntry] | None' = BanlistEntry,
     **filter_by_args
 ):
     with get_session() as session:
@@ -217,7 +217,7 @@ def read_banlist_entries(
 
 
 def read_banlist_entry(
-    *, entry_cls: type[BanlistEntry] | None = BanlistEntry,
+    *, entry_cls: 'type[BanlistEntry] | None' = BanlistEntry,
     **filter_by_args
 ):
     entries = read_banlist_entries(entry_cls=entry_cls, **filter_by_args)
@@ -234,7 +234,7 @@ def delete_banlist_entry(entry_model=None, **model_args):
 
 # MOTD
 
-def read_motd(motd_cls: type[MessageOfTheDay] | None = MessageOfTheDay):
+def read_motd(motd_cls: 'type[MessageOfTheDay] | None' = MessageOfTheDay):
     with get_session() as session:
         model = session.get(SettingModel, "motd")
         if model:

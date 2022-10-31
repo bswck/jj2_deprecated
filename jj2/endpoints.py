@@ -26,7 +26,6 @@ class Connection:
         self.writer = writer
 
         self._is_alive = True
-        self._lock = asyncio.Lock()
 
     @property
     def is_localhost(self):
@@ -55,21 +54,7 @@ class Connection:
     def receive(self, n: int = -1):
         self.reader.read(n)
 
-    async def cycle(self, pool=None):
-        """
-        A coroutine-safe single cycle in the connection life.
-        This method is intended to interact with the connection I/O through write() or receive().
-        It's called continuously by an external loop, and it can be stopped by kill().
-
-        Parameters
-        ----------
-        pool : ConnectionPool or None
-            Connection pool instance that requested validation.
-        """
-        async with self._lock:
-            return await self._cycle(pool)
-
-    async def _validate(self, pool: 'ConnectionPool | None' = None):
+    async def validate(self, pool: 'ConnectionPool | None' = None):
         """
         This method is called before the main connection loop starts.
         It is intended to call kill(), if the connection cannot be validated.
@@ -80,7 +65,7 @@ class Connection:
             Connection pool instance that requested validation.
         """
 
-    async def _cycle(self, pool: 'ConnectionPool | None' = None):
+    async def run_once(self, pool: 'ConnectionPool | None' = None):
         """
         A single cycle in the connection life.
         This method is intended to interact with the connection I/O through write() or receive().
@@ -92,7 +77,7 @@ class Connection:
             Connection pool instance that requested validation.
         """
 
-    def sync(self, pool: 'ConnectionPool', data: str | bytes, exclude_self=True):
+    def sync(self, pool: 'ConnectionPool', data: 'str | bytes', exclude_self=True):
         """
         Synchronize :param:`data` in the entire :param:`pool`.
         Exclude this connection by default.
@@ -130,7 +115,7 @@ class ConnectionPool:
             loop = asyncio.get_event_loop()
             future = loop.create_future()
         self.future = future
-        self.future.add_done_callback(self.on_closed)
+        self.future.add_done_callback(self.on_future_done)
         self.tasks = []
         self.connections = weakref.WeakSet()
 
@@ -143,10 +128,12 @@ class ConnectionPool:
             connection.write(data)
 
     def cancel(self):
+        """Cancel pending and current connection-related tasks."""
         self.cancel_pending_tasks()
         self.cancel_current_tasks()
 
-    def on_closed(self):
+    def on_future_done(self):
+        """Pool future done callback."""
         self.cancel_current_tasks()
 
     def cancel_pending_tasks(self):
@@ -163,7 +150,7 @@ class ConnectionPool:
         self.connections.add(connection)
 
         while not (self.future.done() or self.future.cancelled()):
-            await connection.cycle(self)
+            await connection.run_once(self)
             if not connection.is_alive:
                 self.connections.remove(connection)
                 return
@@ -176,7 +163,7 @@ class ConnectionPool:
 
     async def on_connection(self, endpoint, reader, writer):
         connection = endpoint.connection(reader, writer)
-        connection.is_alive = await connection._validate()
+        connection.is_alive = await connection.validate()
         await self.run(connection)
 
     def connection_callback(self, endpoint):
@@ -238,12 +225,26 @@ class Endpoint:
             loop.run_until_complete(self._future)
 
     def stop(self):
+        """Stop all the endpoint connections."""
+
         if self.connections:
             self._future.cancel()
             self.pool.cancel()
             self.connections.clear()
 
     def endpoint(self, host=None, port=None, **endpoint_args):
+        """
+        Create and return the asynchronous endpoint. Could be a server, client, peer etc.
+
+        Parameters
+        ----------
+        host : str
+            Host of the endpoint.
+        port : int
+            Port of the endpoint.
+        endpoint_args : Any
+            Additional arguments to the endpoint constructor.
+        """
         if host is None:
             host = self.default_host
         if host is None:
@@ -256,6 +257,15 @@ class Endpoint:
         return self.create_endpoint(host, port, **endpoint_args)
 
     def create_endpoint(self, host, port, **endpoint_args):
+        """
+        Create and return the asynchronous endpoint. Could be a server, client, peer etc.
+
+        Parameters
+        ----------
+        host : str
+        port : int
+        endpoint_args : Any
+        """
         raise NotImplementedError
 
 

@@ -7,7 +7,7 @@ from jj2.listservers import db
 class ASCIIListConnection(Connection):
     MSG_ENCODING = 'ASCII'
 
-    async def _cycle(self):
+    async def run_once(self, pool=None):
         logger.info(f"Sending ASCII server list to {self.address}")
 
         db.delete_remote_servers()

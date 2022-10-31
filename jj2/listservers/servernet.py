@@ -1,4 +1,3 @@
-import contextvars
 import dataclasses
 import functools
 import inspect
@@ -13,6 +12,7 @@ from jj2.listservers import db
 from jj2.constants import LISTSERVER_RESERVED_MIRROR_NAME
 
 if typing.TYPE_CHECKING:
+    from typing import Any
     from typing import Callable
 
 
@@ -35,10 +35,6 @@ class ServerNetConnection(Connection):
     job_ns = blinker.Namespace()
     job_class = Job
 
-    _job_obj = contextvars.ContextVar('_job_obj', default=None)
-    _job_ctx = contextvars.ContextVar('_job_ctx')
-    _sync_flag = contextvars.ContextVar('_sync_flag', default=None)
-
     decode_payload = staticmethod(json.loads)
     encode_payload = staticmethod(json.dumps)
 
@@ -52,8 +48,11 @@ class ServerNetConnection(Connection):
         self.read_attempts = 0
         self.sync_chunks = set()
         self.mirror_pool = mirror_pool
+        self.sync_flag = None
+        self.ctx = {}
+        self.job = None
 
-    async def _validate(self, pool=None):
+    async def validate(self, pool=None):
         if self.endpoint.is_ssl:
             if not self.is_localhost:
                 logger.warning(f'Outside IP {self.address} tried connection to remote admin API')
@@ -69,40 +68,12 @@ class ServerNetConnection(Connection):
         db.update_mirror(self.address)
 
     @property
-    def ctx(self):
-        try:
-            ctx = self._job_ctx.get() or {}
-        except LookupError:
-            self.ctx = ctx = {}
-        return ctx
-
-    @ctx.setter
-    def ctx(self, data):
-        self._job_ctx.set(data)
-
-    @property
-    def job(self) -> Job | None:
-        return self._job_obj.get()
-
-    @job.setter
-    def job(self, job):
-        self._job_obj.set(job)
-
-    @property
     def can_sync(self):
         return (
             self.sync_chunks
             and self.job
             and self.job.action not in self.UNSYNCED_REQS
         )
-
-    @property
-    def sync_flag(self):
-        return self._sync_flag.get()
-
-    @sync_flag.setter
-    def sync_flag(self, sync_flag):
-        self._sync_flag.set(sync_flag)
 
     def attempt_read(self):
         try:
@@ -151,7 +122,7 @@ class ServerNetConnection(Connection):
 
         self.job = job
 
-    async def _cycle(self):
+    async def run_once(self, pool=None):
         self.attempt_read()
         payload = self.attempt_decode()
         if self.read_attempts > self.MAX_READ_ATTEMPTS:
@@ -204,11 +175,11 @@ _PASS_CONTEXT_ARG = 'ctx'
 _FUNC_MISSING = object()
 
 
-def server_job(
+def servernet_job(
     action: str,
-    func: Callable | object | None = _FUNC_MISSING, *,
-    args: set[str] | None = None,
-    sync: bool | None = None
+    func: 'Callable | object | None' = _FUNC_MISSING, *,
+    args: 'set[str] | None' = None,
+    sync: 'bool | None' = None
 ):
     """Register a ServerNet job function."""
 
@@ -223,7 +194,7 @@ def server_job(
         )
 
         @functools.wraps(func)
-        def job_wrapper(connection: ServerNetConnection, /, **ctx: str):
+        def job_wrapper(connection: ServerNetConnection, /, **ctx: Any):
             compat_action = connection.job.action == action
 
             args_ok = True
@@ -278,7 +249,7 @@ def servernet_forward(func, *args, **kwargs):
     return func(*args, **kwargs)
 
 
-@server_job('server', args={'id'}, sync=True)
+@servernet_job('server', args={'id'}, sync=True)
 def on_server(connection, ctx):
     server_id = ctx['id']
     if server_id is None:
@@ -292,21 +263,21 @@ def on_server(connection, ctx):
     db.update_server(server_id, **ctx)
 
 
-@server_job('add-banlist', sync=True)
+@servernet_job('add-banlist', sync=True)
 def on_add_banlist(connection, ctx):
     ctx.setdefault(origin=connection.endpoint.address)
     db.create_banlist_entry(**ctx)
     logger.info(f'Added banlist entry via ServerNet connection {connection.address}')
 
 
-@server_job('delete-banlist', sync=True)
+@servernet_job('delete-banlist', sync=True)
 def on_delete_banlist(connection, ctx):
     ctx.setdefault(origin=connection.endpoint.address)
     db.delete_banlist_entry(**ctx)
     logger.info(f'Removed banlist entry via ServerNet connection {connection.address}')
 
 
-@server_job('delist', args={'id'}, sync=True)
+@servernet_job('delist', args={'id'}, sync=True)
 def on_delist(connection, ctx):
     server_id = ctx['id']
     server = db.read_server(server_id)
@@ -328,7 +299,7 @@ def on_delist(connection, ctx):
         connection.sync_flag = False
 
 
-@server_job('add-mirror', args={'name', 'address'}, sync=True)
+@servernet_job('add-mirror', args={'name', 'address'}, sync=True)
 def on_add_mirror(connection, name, address):
     if db.read_mirror(name, address):
         logger.info(
@@ -347,7 +318,7 @@ def on_add_mirror(connection, name, address):
     logger.info(f'Added mirror {address} via ServerNet connection {connection.address}')
 
 
-@server_job('delete-mirror', args={'name', 'address'}, sync=True)
+@servernet_job('delete-mirror', args={'name', 'address'}, sync=True)
 def on_delete_mirror(connection, name, address):
     if not db.read_mirror(name, address):
         logger.info(f'Mirror {connection.address} tried to remove mirror {address}, but not known')
@@ -356,63 +327,62 @@ def on_delete_mirror(connection, name, address):
     logger.info(f'Deleted mirror {address} via ServerNet connection {connection.address}')
 
 
-@server_job('send-motd')
+@servernet_job('send-motd')
 def on_set_motd(connection):
     pass
 
 
-@server_job('request')
+@servernet_job('request')
 def on_request(connection):
     pass
 
 
-@server_job('hello', args={'from'})
+@servernet_job('hello', args={'from'})
 def on_hello(connection, ctx):
-    from_ = ctx['from']
     servernet_forward(on_request, connection)
 
 
-@server_job('request-log')
+@servernet_job('request-log')
 def on_request_log(connection):
     pass
 
 
-@server_job('request-log-from')
+@servernet_job('request-log-from')
 def on_request_log_from(connection):
     pass
 
 
-@server_job('send-log')
+@servernet_job('send-log')
 def on_send_log(connection):
     pass
 
 
-@server_job('reload')
+@servernet_job('reload')
 def on_reload(connection):
     pass
 
 
-@server_job('get-servers')
+@servernet_job('get-servers')
 def on_get_servers(connection):
     pass
 
 
-@server_job('get-banlist')
+@servernet_job('get-banlist')
 def on_get_banlist(connection):
     pass
 
 
-@server_job('get-motd')
+@servernet_job('get-motd')
 def on_get_motd(connection):
     pass
 
 
-@server_job('get-motd-expires')
+@servernet_job('get-motd-expires')
 def on_get_motd_expires(connection):
     pass
 
 
-@server_job('get-mirrors', sync=True)
+@servernet_job('get-mirrors', sync=True)
 def on_get_mirrors(connection):
     mirrors = db.read_mirrors()
     payload = connection.encode_payload([
@@ -422,4 +392,4 @@ def on_get_mirrors(connection):
     connection.write(payload)
 
 
-server_job('ping', func=None, sync=False)
+servernet_job('ping', func=None, sync=False)
