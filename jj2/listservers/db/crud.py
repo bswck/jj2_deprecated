@@ -36,8 +36,8 @@ __all__ = (
 
 
 def read_servers(
-    vanilla: bool = False,
-    mirror: bool = False,
+    vanilla: 'bool' = False,
+    mirror: 'bool' = False,
     bind_listserver: 'str | None' = None,
     server_cls: 'type[GameServer] | None' = GameServer,
 ):

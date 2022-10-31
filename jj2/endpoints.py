@@ -48,7 +48,7 @@ class Connection:
         self.writer.write(data)
 
     @write.register
-    def message(self, data: str):
+    def message(self, data: 'str'):
         self.send(data.encode(self.MSG_ENCODING))
 
     def receive(self, n: int = -1):

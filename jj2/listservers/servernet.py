@@ -18,9 +18,9 @@ if typing.TYPE_CHECKING:
 
 @dataclasses.dataclass
 class Job:
-    action: str
+    action: 'str'
     data: typing.Iterable
-    origin: str
+    origin: 'str'
 
     def validate(self):
         if not (
@@ -39,8 +39,11 @@ class ServerNetConnection(Connection):
     encode_payload = staticmethod(json.dumps)
 
     MAX_READ_ATTEMPTS = 11
-    PAYLOAD_KEYS = {'action', 'data', 'origin'}
-    UNSYNCED_REQS = {'hello', 'request', 'delist', 'request-log', 'send-log', 'request-log-from'}
+    UNSYNCED_JOBS = {
+        'hello', 'request',
+        'delist', 'request-log',
+        'send-log', 'request-log-from'
+    }
 
     def __init__(self, endpoint, reader, writer, mirror_pool):
         super().__init__(endpoint, reader, writer)
@@ -55,14 +58,18 @@ class ServerNetConnection(Connection):
     async def validate(self, pool=None):
         if self.endpoint.is_ssl:
             if not self.is_localhost:
-                logger.warning(f'Outside IP {self.address} tried connection to remote admin API')
+                logger.warning(
+                    f'Outside IP {self.address} '
+                    'tried to connect to the remote admin API'
+                )
                 self.kill()
         elif (
             self.address not in db.read_mirrors().values()
             or self.is_localhost
         ):
             logger.warning(
-                f'Unauthorized ServerNet connection from {self.address}:{self.endpoint.port}'
+                'Unauthorized ServerNet connection '
+                f'from {self.address}:{self.endpoint.port}'
             )
             self.kill()
         db.update_mirror(self.address)
@@ -72,14 +79,17 @@ class ServerNetConnection(Connection):
         return (
             self.sync_chunks
             and self.job
-            and self.job.action not in self.UNSYNCED_REQS
+            and self.job.action not in self.UNSYNCED_JOBS
         )
 
     def attempt_read(self):
         try:
             data = self.receive(2048)
         except OSError:
-            logger.error(f'ServerNet connection from {self.address} broke while receiving data')
+            logger.error(
+                f'ServerNet connection from {self.address} '
+                'broke while receiving data'
+            )
             return self.kill()
         else:
             self.buffer.extend(data)
@@ -89,7 +99,8 @@ class ServerNetConnection(Connection):
         payload = None
         if not self.job:
             try:
-                payload = self.decode_payload(self.buffer.decode(self.MSG_ENCODING, 'ignore'))
+                data = self.buffer.decode(self.MSG_ENCODING, 'ignore')
+                payload = self.decode_payload(data)
             except ValueError:
                 pass
         return payload
@@ -102,9 +113,10 @@ class ServerNetConnection(Connection):
             )
             return self.kill()
 
-        if not all(payload.get(key) for key in self.PAYLOAD_KEYS):
+        if not all(payload.get(key) for key in dataclasses.fields(Job)):
             logger.error(
-                f'ServerNet update received from {self.address}, but JSON was incomplete'
+                f'ServerNet update received from {self.address}, '
+                'but JSON was incomplete'
             )
             return self.kill()
 
@@ -116,7 +128,8 @@ class ServerNetConnection(Connection):
             job.validate()
         except ValueError:
             logger.error(
-                f'ServerNet update received from {self.address}, but the data was incorrect'
+                f'ServerNet update received from {self.address}, '
+                'but the data was incorrect'
             )
             return self.kill()
 
@@ -138,9 +151,9 @@ class ServerNetConnection(Connection):
     def dispatch_job(self):
         sender = type(self)
         action_name = self.job.action
-        for ctx in self.ctx:
+        for sub_ctx in self.ctx:
             signal = self.job_ns.signal(action_name)
-            signal.send(sender, **ctx)
+            signal.send(sender, **sub_ctx)
         if self.can_sync:
             self.sync_job()
 
@@ -171,12 +184,12 @@ class ServerNet(Server):
 
 
 _ORIG_FUNC_ATTR = 'func'
-_PASS_CONTEXT_ARG = 'ctx'
+_CONTEXT_DI_REF = 'ctx'
 _FUNC_MISSING = object()
 
 
 def servernet_job(
-    action: str,
+    action: 'str',
     func: 'Callable | object | None' = _FUNC_MISSING, *,
     args: 'set[str] | None' = None,
     sync: 'bool | None' = None
@@ -203,7 +216,7 @@ def servernet_job(
                 value = ctx.get(arg)
                 if value is None:
                     logger.error(
-                        f'Received incomplete server data '
+                        'Received incomplete server data '
                         f'from ServerNet connection {connection.address}'
                     )
                     connection.sync_flag = False
@@ -211,10 +224,14 @@ def servernet_job(
 
             if args_ok:
                 if not has_variadic_kw:
-                    ctx = {param: value for param, value in ctx.items() if param in parameters}
+                    ctx = {
+                        param: value
+                        for param, value in ctx.items()
+                        if param in parameters
+                    }
 
-                if _PASS_CONTEXT_ARG in parameters:
-                    ctx[_PASS_CONTEXT_ARG] = connection.ctx
+                if _CONTEXT_DI_REF in parameters:
+                    ctx[_CONTEXT_DI_REF] = connection.ctx
 
                 if sync is not None:
                     connection.sync_flag = sync
@@ -252,13 +269,6 @@ def servernet_forward(func, *args, **kwargs):
 @servernet_job('server', args={'id'}, sync=True)
 def on_server(connection, ctx):
     server_id = ctx['id']
-    if server_id is None:
-        logger.error(
-            f'Received incomplete server data '
-            f'from ServerNet connection {connection.address}'
-        )
-        connection.sync_flag = False
-        return
     ctx.update(remote=1)
     db.update_server(server_id, **ctx)
 
@@ -267,14 +277,18 @@ def on_server(connection, ctx):
 def on_add_banlist(connection, ctx):
     ctx.setdefault(origin=connection.endpoint.address)
     db.create_banlist_entry(**ctx)
-    logger.info(f'Added banlist entry via ServerNet connection {connection.address}')
+    logger.info(
+        f'Added banlist entry via ServerNet connection {connection.address}'
+    )
 
 
 @servernet_job('delete-banlist', sync=True)
 def on_delete_banlist(connection, ctx):
     ctx.setdefault(origin=connection.endpoint.address)
     db.delete_banlist_entry(**ctx)
-    logger.info(f'Removed banlist entry via ServerNet connection {connection.address}')
+    logger.info(
+        f'Removed banlist entry via ServerNet connection {connection.address}'
+    )
 
 
 @servernet_job('delist', args={'id'}, sync=True)
@@ -287,14 +301,15 @@ def on_delist(connection, ctx):
             logger.info(f'Delisted server via ServerNet connection {connection.address}')
         else:
             logger.error(
-                f'Mirror {connection.address} tried to delist server {server_id}, '
-                f'but the server was not remote!'
+                f'Mirror {connection.address} tried '
+                f'to delist server {server_id}, '
+                'but the server was not remote!'
             )
             connection.sync_flag = False
     else:
         logger.error(
-            f'Mirror {connection.address} tried to delist server {server_id}, '
-            f'but the server was unknown'
+            f'Mirror {connection.address} tried to '
+            f'delist server {server_id}, but the server was unknown'
         )
         connection.sync_flag = False
 
@@ -303,13 +318,14 @@ def on_delist(connection, ctx):
 def on_add_mirror(connection, name, address):
     if db.read_mirror(name, address):
         logger.info(
-            f'Mirror {connection.address} tried adding mirror {address}, '
+            f'Mirror {connection.address} tried to add mirror {address}, '
             f'but name or address already known'
         )
         return
     if name == LISTSERVER_RESERVED_MIRROR_NAME:
         logger.error(
-            f'{LISTSERVER_RESERVED_MIRROR_NAME} is a reserved name for mirrors, %s tried using it'
+            f'{LISTSERVER_RESERVED_MIRROR_NAME} is a reserved '
+            f'name for mirrors, %s tried to use it'
         )
         connection.sync_flag = False
         return
@@ -321,7 +337,10 @@ def on_add_mirror(connection, name, address):
 @servernet_job('delete-mirror', args={'name', 'address'}, sync=True)
 def on_delete_mirror(connection, name, address):
     if not db.read_mirror(name, address):
-        logger.info(f'Mirror {connection.address} tried to remove mirror {address}, but not known')
+        logger.info(
+            f'Mirror {connection.address} tried to '
+            f'remove mirror {address}, but not known'
+        )
         return
     db.delete_mirror(name, address)
     logger.info(f'Deleted mirror {address} via ServerNet connection {connection.address}')
@@ -384,11 +403,8 @@ def on_get_motd_expires(connection):
 
 @servernet_job('get-mirrors', sync=True)
 def on_get_mirrors(connection):
-    mirrors = db.read_mirrors()
-    payload = connection.encode_payload([
-        dict(name=name, address=address)
-        for name, address in mirrors
-    ])
+    mirrors = [dataclasses.asdict(mirror) for mirror in db.read_mirrors()]
+    payload = connection.encode_payload(mirrors)
     connection.write(payload)
 
 
