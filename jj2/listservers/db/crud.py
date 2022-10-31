@@ -1,45 +1,45 @@
 import datetime
 
-from jj2.classes import GameServer
-from jj2.classes import MessageOfTheDay
-from jj2.classes import BanlistEntry
-from jj2.listservers.db.setup import get_session
-
+from jj2.listservers.classes import BanlistEntry
+from jj2.listservers.classes import GameServer
+from jj2.listservers.classes import MessageOfTheDay
+from jj2.listservers.classes import Mirror
+from jj2.listservers.db.api import get_session
 from jj2.listservers.db.models import BanlistEntryModel
+from jj2.listservers.db.models import MirrorModel
 from jj2.listservers.db.models import ServerModel
 from jj2.listservers.db.models import SettingModel
-from jj2.listservers.db.models import MirrorModel
 
 
 __all__ = (
-    'get_server',
-    'get_servers',
+    'read_server',
+    'read_servers',
     'update_server',
+    'delete_remote_servers',
     'delete_server',
-    'add_banlist_entry',
-    'get_banlist_entry',
-    'get_banlist_entries',
+
+    'create_mirror',
+    'read_mirror',
+    'read_mirrors',
+    'update_mirror',
+    'delete_mirror',
+
+    'create_banlist_entry',
+    'read_banlist_entries',
+    'read_banlist_entry',
     'delete_banlist_entry',
-    'purge_remote_servers',
-    'get_motd',
-    'get_mirrors',
-    'update_lifesign',
+
+    'read_motd',
 )
 
-
-def get_motd():
-    with get_session() as session:
-        motd_text = session.get(SettingModel, "motd")
-        soon = (datetime.datetime.utcnow() + datetime.timedelta(seconds=10)).timestamp()
-        expires = session.get(SettingModel, "motd-expires") or soon
-    return MessageOfTheDay(motd_text, expires)
+# Servers
 
 
-def get_servers(
+def read_servers(
     vanilla: bool = False,
     mirror: bool = False,
-    bind_serverlist: str | None = None,
-    _cast: bool = True
+    bind_listserver: str | None = None,
+    server_cls: type[GameServer] | None = GameServer,
 ):
     with get_session() as session:
         query = session.query(ServerModel)
@@ -47,23 +47,28 @@ def get_servers(
             query = query.filter(ServerModel.max > 0)
         if vanilla:
             query = query.filter(ServerModel.plusonly == 0)
-        models = query.order_by(
+        query = query.order_by(
             ServerModel.prefer.desc(),
             ServerModel.private.asc(),
             (ServerModel.players == ServerModel.max).asc(),
             ServerModel.players.desc(),
             ServerModel.created.asc()
-        ).all()
+        )
+        server_models = query.all()
     return [
-        GameServer.from_orm(model, serverlist=bind_serverlist)
-        if _cast else model
-        for model in models
+        server_from_model(
+            server_model,
+            server_cls=server_cls,
+            bind_listserver=bind_listserver
+        )
+        if server_cls else server_model
+        for server_model in server_models
     ]
 
 
 def update_server(server_id, **traits):
     with get_session() as session:
-        server = get_server(server_id)
+        server = read_server(server_id)
         if not server:
             server = ServerModel(id=server_id)
         for column, value in traits.items():
@@ -72,39 +77,119 @@ def update_server(server_id, **traits):
         session.commit()
 
 
-def get_server(server_id, _cast=True):
+def server_from_model(server_model, server_cls=GameServer, bind_listserver=None):
+    server = None
+    if server_model:
+        server = server_cls(
+            address=server_model.ip,
+            port=server_model.port,
+            remote=bool(server_model.remote),
+            private=bool(server_model.private),
+            mode=server_model.mode,
+            version=server_model.version,
+            listed_at=datetime.datetime.utcfromtimestamp(server_model.created),
+            clients=server_model.players,
+            max_clients=server_model.max,
+            name=server_model.name,
+        )
+        if bind_listserver:
+            server.listserver = bind_listserver
+    return server
+
+
+def read_server(
+    server_id,
+    server_cls: type[GameServer] | None = GameServer,
+    bind_serverlist: str | None = None
+):
     with get_session() as session:
         server_model = session.get(ServerModel, server_id)
-        if _cast:
-            return GameServer.from_orm(server_model)
+        if server_cls:
+            return server_from_model(
+                server_model,
+                server_cls=server_cls,
+                bind_listserver=bind_serverlist
+            )
         return server_model
 
 
+def delete_remote_servers(timeout=40):
+    with get_session() as session:
+        (
+            session
+            .query(ServerModel)
+            .filter(
+                ServerModel.remote == 1,
+                ServerModel.lifesign < (
+                    datetime.datetime.utcnow() - datetime.timedelta(seconds=timeout)
+                ).timestamp()
+            )
+            .delete()
+        )
+        session.commit()
+
+
 def delete_server(server_id):
-    server_model = get_server(server_id, _cast=False)
+    server_model = read_server(server_id, server_cls=None)
     with get_session() as session:
         session.delete(server_model)
         session.commit()
 
 
-def get_banlist_entries(_cast=True, **filter_by_args):
+# Mirrors
+
+def create_mirror(name, address):
     with get_session() as session:
-        return [
-            BanlistEntry(**entry_model._mapping)
-            if _cast else entry_model
-            for entry_model in session.query(
-                BanlistEntryModel
-            ).filter_by(**filter_by_args).all()
-        ]
+        mirror_model = MirrorModel(name, address)
+        session.add(mirror_model)
+        session.commit()
 
 
-def get_banlist_entry(**filter_by_args):
-    entries = get_banlist_entries(**filter_by_args)
-    return entries[0] if entries else None
+def read_mirror(name, address, mirror_cls: type[Mirror] | None = Mirror):
+    with get_session() as session:
+        mirror_model = session.get(MirrorModel, [name, address])
+    ret = None
+    if mirror_model:
+        if mirror_cls:
+            ret = Mirror(mirror_model.name, mirror_model.address)
+        else:
+            ret = mirror_model
+    return ret
 
 
-def add_banlist_entry(**model_args):
-    existing_entry_model = get_banlist_entry(**model_args, _cast=False)
+def read_mirrors(mirror_cls: type[Mirror] | None = Mirror):
+    with get_session() as session:
+        mirror_models = session.query(MirrorModel).all()
+    return [
+        Mirror(mirror_model.name, mirror_model.address)
+        if mirror_cls else mirror_model
+        for mirror_model in mirror_models
+    ]
+
+
+def update_mirror(address):
+    with get_session() as session:
+        (
+            session
+            .query(MirrorModel)
+            .filter_by(address=address)
+            .update(dict(lifesign=datetime.datetime.utcnow()))
+        )
+        session.commit()
+
+
+def delete_mirror(name, address):
+    with get_session() as session:
+        mirror_model = read_mirror(name, address, mirror_cls=None)
+        if mirror_model:
+            session.delete(mirror_model)
+            session.commit()
+
+
+# Banlist entries
+
+def create_banlist_entry(**model_args):
+    existing_entry_model = read_banlist_entry(**model_args, entry_cls=None)
     if existing_entry_model:
         delete_banlist_entry(entry_model=existing_entry_model)
     else:
@@ -114,35 +199,56 @@ def add_banlist_entry(**model_args):
             session.commit()
 
 
+def read_banlist_entries(
+    *, entry_cls: type[BanlistEntry] | None = BanlistEntry,
+    **filter_by_args
+):
+    with get_session() as session:
+        return [
+            BanlistEntry(**entry_model._mapping)
+            if entry_cls else entry_model
+            for entry_model in (
+                session
+                .query(BanlistEntryModel)
+                .filter_by(**filter_by_args)
+                .all()
+            )
+        ]
+
+
+def read_banlist_entry(
+    *, entry_cls: type[BanlistEntry] | None = BanlistEntry,
+    **filter_by_args
+):
+    entries = read_banlist_entries(entry_cls=entry_cls, **filter_by_args)
+    return entries[0] if entries else None
+
+
 def delete_banlist_entry(entry_model=None, **model_args):
     if entry_model is None:
-        entry_model = get_banlist_entry(**model_args, _cast=False)
+        entry_model = read_banlist_entry(**model_args, entry_cls=None)
     with get_session() as session:
         session.delete(entry_model)
         session.commit()
 
 
-def get_mirrors():
+# MOTD
+
+def read_motd(motd_cls: type[MessageOfTheDay] | None = MessageOfTheDay):
     with get_session() as session:
-        mirrors = session.query(MirrorModel).all()
-    return {mirror.name: mirror.address for mirror in mirrors}
+        model = session.get(SettingModel, "motd")
+        if model:
+            text = model.value
+            soon = (datetime.datetime.utcnow() + datetime.timedelta(seconds=10)).timestamp()
+            expires_model = session.get(SettingModel, "motd-expires")
+            expires = soon
+            if expires_model:
+                expires = expires_model.value
+    if motd_cls:
+        return MessageOfTheDay(text, expires)
+    return model, expires_model
 
 
-def purge_remote_servers(timeout=40):
+def update_motd(motd_text):
     with get_session() as session:
-        session.query(ServerModel).filter(
-            ServerModel.remote == 1,
-            ServerModel.lifesign < (
-                datetime.datetime.utcnow()
-                - datetime.timedelta(seconds=timeout)
-            ).timestamp()
-        ).delete()
-        session.commit()
-
-
-def update_lifesign(address):
-    with get_session() as session:
-        session.query(MirrorModel).filter_by(
-            address=address
-        ).update(dict(lifesign=datetime.datetime.utcnow()))
-        session.commit()
+        session

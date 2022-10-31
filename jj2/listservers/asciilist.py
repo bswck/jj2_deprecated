@@ -1,21 +1,21 @@
 from loguru import logger
 
-from jj2.aiolib import AsyncConnection, AsyncServer
+from jj2.endpoints import Connection, Server
 from jj2.listservers import db
 
 
-class ASCIIListConnection(AsyncConnection):
+class ASCIIListConnection(Connection):
     MSG_ENCODING = 'ASCII'
 
-    async def run(self):
-        logger.info(f"Sending ASCII server list to {self.ip}")
+    async def _cycle(self):
+        logger.info(f"Sending ASCII server list to {self.address}")
 
-        db.purge_remote_servers()
-        servers = db.get_servers(bind_serverlist=self.server.ip)
-        self.msg("".join(server.asciilist_repr for server in servers))
+        db.delete_remote_servers()
+        servers = db.read_servers(bind_listserver=self.endpoint.job)
+        self.message("".join(server.asciilist_repr for server in servers))
         self.kill()
 
 
-class ASCIIListServer(AsyncServer):
+class ASCIIListServer(Server):
     default_port = 10057
     connection_class = ASCIIListConnection

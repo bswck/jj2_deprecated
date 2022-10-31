@@ -7,10 +7,11 @@ import typing
 
 import construct as cs
 
+from jj2.constants import DEFAULT_GAME_SERVER_PORT
+
 if typing.TYPE_CHECKING:
     from typing import ClassVar
     from typing import Hashable
-    from jj2.listservers.db.models import ServerModel
 
 
 class GameServer:
@@ -29,29 +30,26 @@ class GameServer:
     _servers: 'ClassVar[dict[Hashable, GameServer]]' = {}
 
     _ASCIILIST_REPR_PATTERN: re.Pattern = re.compile(
-        r'(?P<ip>\d+\.\d+\.\d+\.\d+):(?P<port>\d+)\s'
+        r'(?P<ip>[\dabcdef:.]+):(?P<port>\d+)\s'
         r'(?P<remote>local|mirror)\s'
         r'(?P<private>public|private)\s'
         r'(?P<mode>\w+)\s'
         r'(?P<version>.{6})\s'
         r'(?P<uptime>\d+)\s'
-        r'\[(?P<players>\d+)/(?P<max>\d+)]\s'
-        r'(?P<name>.+)\r\n'
+        r'\[(?P<clients>\d+)/(?P<max_clients>\d+)]\s'
+        r'(?P<name>.+)(\r\n)?'
     )
-    _NAME_ENCODING: str = 'ASCII'
 
-    _IPV4_BINARYLIST_REPR_PATTERN = cs.Struct(
+    _IPV4_BINARYLIST_REPR_PATTERN: cs.Construct = cs.Struct(
         ip=cs.ByteSwapped(cs.Bytes(4)),
         port=cs.Int16ul,
-        name=cs.GreedyString(_NAME_ENCODING),
-        eof=cs.Terminated
+        name=cs.ExprValidator(cs.GreedyBytes, lambda obj, ctx: obj.isascii()),
     )
 
-    _IPV6_BINARYLIST_REPR_PATTERN = cs.Struct(
+    _IPV6_BINARYLIST_REPR_PATTERN: cs.Construct = cs.Struct(
         ip=cs.ByteSwapped(cs.Bytes(16)),
         port=cs.Int16ul,
-        name=cs.GreedyString(_NAME_ENCODING),
-        eof=cs.Terminated
+        name=cs.ExprValidator(cs.GreedyBytes, lambda obj, ctx: obj.isascii()),
     )
 
     _BINARYLIST_REPR_PATTERN: cs.Construct = cs.Select(
@@ -60,23 +58,15 @@ class GameServer:
     )
 
     @classmethod
-    def get_instance_key(cls, ip, port=10052, *_args, **_kwargs) -> 'Hashable':
+    def get_instance_key(cls, ip, port=DEFAULT_GAME_SERVER_PORT, *_args, **_kwargs) -> 'Hashable':
         """Get this instance's key for lookup."""
+        ip = ipaddress.ip_address(ip).compressed
         return sys.intern(f'{ip}:{port}')
-
-    def __new__(cls, *args, isolated=False, **kwargs) -> 'GameServer':
-        key = cls.get_instance_key(*args, **kwargs)
-        if not isolated and key in cls._servers:
-            return cls._servers[key]
-        inst = object.__new__(cls)
-        if not isolated:
-            cls._servers[key] = inst
-        return inst
 
     def __init__(
         self,
-        ip: str | int | bytes | ipaddress.IPv4Address | ipaddress.IPv6Address,
-        port: int = 10052, *,
+        address: str | int | bytes | ipaddress.IPv4Address | ipaddress.IPv6Address,
+        port: int = DEFAULT_GAME_SERVER_PORT, *,
         name: str | None = None,
         remote: bool | None = None,
         private: bool | None = None,
@@ -92,9 +82,9 @@ class GameServer:
         """
         Parameters
         ----------
-        ip : str or int or bytes or ipaddress.IPv4Address or ipaddress.IPv6Address
-            The IP (v4 or v6) address of this server.
-        port : int = 10052
+        address : str or int or bytes or ipaddress.IPv4Address or ipaddress.IPv6Address
+            The IPv4 or IPv6 address of this server.
+        port : int
             The network port of this server.
         remote : bool or None
             States whether this server was first listed on the assigned :attribute:`listserver`.
@@ -123,8 +113,8 @@ class GameServer:
             If the new GameServer instance is isolated, no strong reference is made to it
             in the :attribute:`_servers` attribute.
         """
-        self.ip = ipaddress.ip_address(ip)
-        self.port = port
+        self.address = ipaddress.ip_address(address)
+        self.port = int(port)
         self.isolated = isolated
         if listed_at is None:
             listed_at = self.listed_at or datetime.datetime.utcnow()
@@ -148,55 +138,44 @@ class GameServer:
         if max_clients is not None:
             self.max_clients = max_clients
 
-    @classmethod
-    def from_orm(cls, model: 'ServerModel', serverlist: str | None = None) -> 'GameServer':
-        inst = None
-        if model:
-            inst = cls(
-                ip=ipaddress.ip_address(model.ip),
-                port=model.port,
-                remote=bool(model.remote),
-                private=bool(model.private),
-                mode=model.mode,
-                version=model.version,
-                listed_at=datetime.datetime.utcfromtimestamp(model.created),
-                clients=model.players,
-                max_clients=model.max,
-                name=model.name,
-            )
-        if serverlist:
-            inst.listserver = serverlist
+    def __new__(cls, *args, isolated: bool = False, **kwargs) -> 'GameServer':
+        key = cls.get_instance_key(*args, **kwargs)
+        if not isolated and key in cls._servers:
+            return cls._servers[key]
+        inst = object.__new__(cls)
+        if not isolated:
+            cls._servers[key] = inst
         return inst
 
     @property
     def binarylist_repr(self) -> bytes:
         return self._BINARYLIST_REPR_PATTERN.build(dict(
-            ip=self.ip.packed,
+            ip=self.address.packed,
             port=self.port,
-            name=self.name
+            name=self.name.encode()
         ))
 
     @classmethod
     def from_binarylist_repr(cls, binarylist_repr: bytes, isolated: bool = False):
         data = cls._BINARYLIST_REPR_PATTERN.parse(binarylist_repr)
         return cls(
-            ip=data.ip,
+            address=data.address,
             port=data.port,
-            name=data.name,
+            name=data.name.decode(),
             isolated=isolated
         )
 
     @property
     def asciilist_repr(self):
-        uptime = (datetime.datetime.utcnow() - self.listed_at).total_seconds()
+        uptime = int((datetime.datetime.utcnow() - self.listed_at).total_seconds())
         return (
-            f'{self.ip}:{self.port} '
+            f'{self.address.compressed}:{self.port} '
             f'{("local", "mirror")[self.remote]} '
             f'{("public", "private")[self.private]} '
             f'{self.mode} '
             f'{self.version.ljust(6)} '
             f'{uptime} '
-            f'[{self.clients}/{self.max_clients}] '
+            f'[{self.clients or 0}/{self.max_clients or 32}] '
             f'{self.name}\r\n'
         )
 
@@ -205,8 +184,25 @@ class GameServer:
         match = re.fullmatch(cls._ASCIILIST_REPR_PATTERN, string.strip())
         inst = None
         if match:
-            inst = cls(**match.groupdict(), isolated=isolated)
+            info = match.groupdict()
+            info.update(
+                remote=info['remote'] == 'mirror',
+                private=info['private'] == 'private',
+                version=info['version'].strip(),
+                clients=int(info['clients']),
+                max_clients=int(info['max_clients']),
+                listed_at=(
+                    datetime.datetime.utcnow()
+                    - datetime.timedelta(seconds=int(info.pop('uptime')))
+                )
+            )
+            inst = cls(**info, isolated=isolated)
         return inst
+
+    def __repr__(self):
+        class_name = type(self).__name__
+        ip, port, name = self.address, self.port, self.name
+        return f'<{class_name} {ip=!r} {port=!s} {name=!r}>'
 
 
 @dataclasses.dataclass
@@ -227,3 +223,9 @@ class BanlistEntry:
     note: str
     origin: str
     reserved: str
+
+
+@dataclasses.dataclass
+class Mirror:
+    name: str
+    address: str

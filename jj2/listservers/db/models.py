@@ -1,6 +1,11 @@
-from sqlalchemy import Column, Text, Integer, text
+import datetime
 
-from jj2.listservers.db.setup import Base
+from sqlalchemy import text, event
+from sqlalchemy import Column
+from sqlalchemy import Integer
+from sqlalchemy import Text
+
+from jj2.listservers.db.api import Base
 
 
 class ServerModel(Base):
@@ -31,6 +36,20 @@ class SettingModel(Base):
     value = Column(Text)
 
 
+@event.listens_for(SettingModel, 'after_create')
+def setup_motd_fields(_t, connection, **_k):
+    stmt = (
+       f"INSERT INTO {SettingModel.__tablename__} "
+       f"(item, value) VALUES (?, ?), (?, ?), (?, ?)"
+    )
+    values = (
+        "motd", "",
+        "motd-updated", "0",
+        "motd-expires", (datetime.datetime.utcnow() + datetime.timedelta(3 * 86400)).timestamp()
+    )
+    connection.execute(stmt, values)
+
+
 class BanlistEntryModel(Base):
     __tablename__ = 'banlist'
     address = Column(Text, primary_key=True)
@@ -44,4 +63,4 @@ class MirrorModel(Base):
     __tablename__ = 'mirrors'
     name = Column(Text, primary_key=True)
     address = Column(Text, primary_key=True)
-    lifesign = Column(Integer, server_default=text('0'), primary_key=True)
+    lifesign = Column(Integer, server_default=text('0'))

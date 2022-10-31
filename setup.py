@@ -1,4 +1,4 @@
-"""Python setup.py for jj2 package"""
+"""Python api.py for jj2 package"""
 from setuptools import find_packages, setup
 
 setup(

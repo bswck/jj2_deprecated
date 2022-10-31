@@ -8,12 +8,16 @@ import typing
 import blinker
 from loguru import logger
 
+from jj2.endpoints import Connection, Server
 from jj2.listservers import db
-from jj2.aiolib import AsyncConnection, AsyncServer
+from jj2.constants import LISTSERVER_RESERVED_MIRROR_NAME
+
+if typing.TYPE_CHECKING:
+    from typing import Callable
 
 
 @dataclasses.dataclass
-class RPC:
+class Job:
     action: str
     data: typing.Iterable
     origin: str
@@ -24,15 +28,16 @@ class RPC:
             and isinstance(self.data, typing.Iterable)
             and isinstance(self.origin, str)
         ):
-            raise ValueError('invalid ServerNet RPC request')
+            raise ValueError('invalid ServerNet job request')
 
 
-class ServerNetConnection(AsyncConnection):
-    rpc_ns = blinker.Namespace()
-    rpc_class = RPC
-    _rpc_obj = contextvars.ContextVar('_rpc_obj', default=None)
-    _rpc_ctx = contextvars.ContextVar('_rpc_ctx')
-    _sync_fg = contextvars.ContextVar('_sync_fg', default=None)
+class ServerNetConnection(Connection):
+    job_ns = blinker.Namespace()
+    job_class = Job
+
+    _job_obj = contextvars.ContextVar('_job_obj', default=None)
+    _job_ctx = contextvars.ContextVar('_job_ctx')
+    _sync_flag = contextvars.ContextVar('_sync_flag', default=None)
 
     decode_payload = staticmethod(json.loads)
     encode_payload = staticmethod(json.dumps)
@@ -41,68 +46,69 @@ class ServerNetConnection(AsyncConnection):
     PAYLOAD_KEYS = {'action', 'data', 'origin'}
     UNSYNCED_REQS = {'hello', 'request', 'delist', 'request-log', 'send-log', 'request-log-from'}
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, endpoint, reader, writer, mirror_pool):
+        super().__init__(endpoint, reader, writer)
         self.buffer = bytearray()
         self.read_attempts = 0
         self.sync_chunks = set()
+        self.mirror_pool = mirror_pool
 
-    async def validate(self):
-        if self.server.is_ssl:
+    async def _validate(self, pool=None):
+        if self.endpoint.is_ssl:
             if not self.is_localhost:
-                logger.warning(f'Outside IP {self.ip} tried connection to remote admin API')
+                logger.warning(f'Outside IP {self.address} tried connection to remote admin API')
                 self.kill()
         elif (
-            self.ip not in db.get_mirrors().values()
+            self.address not in db.read_mirrors().values()
             or self.is_localhost
         ):
-            logger.warning(f'Unauthorized ServerNet connection from {self.ip}:{self.server.port}')
+            logger.warning(
+                f'Unauthorized ServerNet connection from {self.address}:{self.endpoint.port}'
+            )
             self.kill()
-        db.update_lifesign(self.ip)
+        db.update_mirror(self.address)
 
     @property
     def ctx(self):
         try:
-            ctx = self._rpc_ctx.get() or {}
+            ctx = self._job_ctx.get() or {}
         except LookupError:
             self.ctx = ctx = {}
         return ctx
 
     @ctx.setter
     def ctx(self, data):
-        self._rpc_ctx.set(data)
+        self._job_ctx.set(data)
 
     @property
-    def rpc(self) -> RPC | None:
-        return self._rpc_obj.get()
+    def job(self) -> Job | None:
+        return self._job_obj.get()
 
-    @rpc.setter
-    def rpc(self, rpc):
-        self._rpc_obj.set(rpc)
+    @job.setter
+    def job(self, job):
+        self._job_obj.set(job)
 
     @property
     def can_sync(self):
         return (
             self.sync_chunks
-            and self.rpc
-            and self.rpc.action not in self.UNSYNCED_REQS
+            and self.job
+            and self.job.action not in self.UNSYNCED_REQS
         )
 
     @property
     def sync_flag(self):
-        return self._sync_fg.get()
+        return self._sync_flag.get()
 
     @sync_flag.setter
     def sync_flag(self, sync_flag):
-        self._sync_fg.set(sync_flag)
+        self._sync_flag.set(sync_flag)
 
     def attempt_read(self):
         try:
-            data = self.recv(2048)
+            data = self.receive(2048)
         except OSError:
-            logger.error(
-                f'ServerNet connection from {self.address} broke while receiving data'
-            )
+            logger.error(f'ServerNet connection from {self.address} broke while receiving data')
             return self.kill()
         else:
             self.buffer.extend(data)
@@ -110,93 +116,103 @@ class ServerNetConnection(AsyncConnection):
 
     def attempt_decode(self):
         payload = None
-        if not self.rpc:
+        if not self.job:
             try:
                 payload = self.decode_payload(self.buffer.decode(self.MSG_ENCODING, 'ignore'))
             except ValueError:
                 pass
         return payload
 
-    def make_rpc(self, payload):
+    def make_job(self, payload):
         if self.buffer and not payload:
             logger.error(
-                f'ServerNet update received from {self.ip}, '
+                f'ServerNet update received from {self.address}, '
                 f'but could not acquire valid payload (got {self.buffer})'
             )
             return self.kill()
 
         if not all(payload.get(key) for key in self.PAYLOAD_KEYS):
             logger.error(
-                f'ServerNet update received from {self.ip}, but JSON was incomplete'
+                f'ServerNet update received from {self.address}, but JSON was incomplete'
             )
             return self.kill()
 
-        if payload['origin'].strip() == self.server.ip:
+        if payload['origin'].strip() == self.endpoint.address:
             return self.kill()
 
-        rpc = self.rpc_class(**payload)
+        job = self.job_class(**payload)
         try:
-            rpc.validate()
+            job.validate()
         except ValueError:
             logger.error(
-                f'ServerNet update received from {self.ip}, but the data was incorrect'
+                f'ServerNet update received from {self.address}, but the data was incorrect'
             )
             return self.kill()
 
-        self.rpc = rpc
+        self.job = job
 
-    async def run(self):
+    async def _cycle(self):
         self.attempt_read()
         payload = self.attempt_decode()
         if self.read_attempts > self.MAX_READ_ATTEMPTS:
             return self.kill()
         if payload:
-            self.make_rpc(payload)
-        if self.rpc:
+            self.make_job(payload)
+        if self.job:
             try:
-                self.dispatch_rpc()
+                self.dispatch_job()
             finally:
                 self.kill()
 
-    def dispatch_rpc(self):
+    def dispatch_job(self):
         sender = type(self)
-        action_name = self.rpc.action
-        for chunk in self.ctx:
-            signal = self.rpc_ns.signal(action_name)
-            signal.send(sender, **chunk)
+        action_name = self.job.action
+        for ctx in self.ctx:
+            signal = self.job_ns.signal(action_name)
+            signal.send(sender, **ctx)
         if self.can_sync:
-            self.sync_rpc()
+            self.sync_job()
 
-    def sync_rpc(self):
-        rpc = self.rpc_class(
-            action=self.rpc.action,
-            data=list(self.sync_chunks),
-            origin=self.ip
+    def request_job(self, action, *data, origin=None):
+        if origin is None:
+            origin = self.endpoint.address
+        job = self.job_class(
+            action=action,
+            data=list(data),
+            origin=origin
         )
-        payload = self.encode_payload(rpc)
-        self.sync(payload)
+        payload = self.encode_payload(job)
+        self.write(payload)
+
+    def sync_job(self):
+        job = self.job_class(
+            action=self.job.action,
+            data=list(self.sync_chunks),
+            origin=self.address
+        )
+        payload = self.encode_payload(job)
+        self.sync(self.mirror_pool, payload)
 
 
-class ServerNet(AsyncServer):
+class ServerNet(Server):
     default_port = 10058
     connection_class = ServerNetConnection
 
 
-def rename(**old_to_new):
-    return lambda chunk: {
-        old_to_new.get(key, key): value
-        for key, value in chunk.items()
-    }
-
-
 _ORIG_FUNC_ATTR = 'func'
 _PASS_CONTEXT_ARG = 'ctx'
-
 _FUNC_MISSING = object()
 
 
-def callback(action, mappers=None, func=_FUNC_MISSING, *, sync=None):
-    def callback_decorator(decorated_func):
+def server_job(
+    action: str,
+    func: Callable | object | None = _FUNC_MISSING, *,
+    args: set[str] | None = None,
+    sync: bool | None = None
+):
+    """Register a ServerNet job function."""
+
+    def job_decorator(decorated_func: Callable):
         nonlocal func
         if not decorated_func:
             func = decorated_func
@@ -207,24 +223,33 @@ def callback(action, mappers=None, func=_FUNC_MISSING, *, sync=None):
         )
 
         @functools.wraps(func)
-        def callback_wrapper(connection, /, **ctx):
-            compat_action = connection.rpc.action == action
+        def job_wrapper(connection: ServerNetConnection, /, **ctx: str):
+            compat_action = connection.job.action == action
 
-            if compat_action:
-                connection.ctx = ctx
-                ctx_mappers = mappers if isinstance(mappers, typing.Iterable) else [mappers]
-                for mapper in filter(callable, ctx_mappers):
-                    ctx = mapper(ctx)
+            args_ok = True
 
-            if not has_variadic_kw:
-                ctx = {param: value for param, value in ctx.items() if param in parameters}
+            for arg in (args or set()):
+                value = ctx.get(arg)
+                if value is None:
+                    logger.error(
+                        f'Received incomplete server data '
+                        f'from ServerNet connection {connection.address}'
+                    )
+                    connection.sync_flag = False
+                    args_ok = False
 
-            if _PASS_CONTEXT_ARG in parameters:
-                ctx[_PASS_CONTEXT_ARG] = connection.ctx
+            if args_ok:
+                if not has_variadic_kw:
+                    ctx = {param: value for param, value in ctx.items() if param in parameters}
 
-            if sync is not None:
-                connection.sync_flag = sync
-            func(connection, **ctx)
+                if _PASS_CONTEXT_ARG in parameters:
+                    ctx[_PASS_CONTEXT_ARG] = connection.ctx
+
+                if sync is not None:
+                    connection.sync_flag = sync
+
+                func(connection, **ctx)
+
             do_sync = connection.sync_flag
 
             if compat_action and do_sync:
@@ -233,8 +258,8 @@ def callback(action, mappers=None, func=_FUNC_MISSING, *, sync=None):
 
         wrapper = (
             ServerNetConnection
-            .rpc_ns.signal(action)
-            .connect(callback_wrapper)
+            .job_ns.signal(action)
+            .connect(job_wrapper)
         )
         setattr(
             wrapper, _ORIG_FUNC_ATTR,
@@ -243,22 +268,23 @@ def callback(action, mappers=None, func=_FUNC_MISSING, *, sync=None):
         return wrapper
 
     if func is None:
-        return callback_decorator(lambda connection: None)
+        return job_decorator(lambda connection: None)
     func = None
-    return callback_decorator
+    return job_decorator
 
 
-def call(func, *args, **kwargs):
+def servernet_forward(func, *args, **kwargs):
     func = getattr(func, _ORIG_FUNC_ATTR, func)
     return func(*args, **kwargs)
 
 
-@callback('server', rename(id='server_id'), sync=True)
-def on_server(connection, ctx, server_id=None):
+@server_job('server', args={'id'}, sync=True)
+def on_server(connection, ctx):
+    server_id = ctx['id']
     if server_id is None:
         logger.error(
             f'Received incomplete server data '
-            f'from ServerNet connection {connection.ip}'
+            f'from ServerNet connection {connection.address}'
         )
         connection.sync_flag = False
         return
@@ -266,113 +292,134 @@ def on_server(connection, ctx, server_id=None):
     db.update_server(server_id, **ctx)
 
 
-@callback('add-banlist', sync=True)
+@server_job('add-banlist', sync=True)
 def on_add_banlist(connection, ctx):
-    ctx.setdefault(origin=connection.server.ip)
-    db.add_banlist_entry(**ctx)
-    logger.info(f'Added banlist entry via ServerNet connection {connection.ip}')
+    ctx.setdefault(origin=connection.endpoint.address)
+    db.create_banlist_entry(**ctx)
+    logger.info(f'Added banlist entry via ServerNet connection {connection.address}')
 
 
-@callback('delete-banlist', sync=True)
+@server_job('delete-banlist', sync=True)
 def on_delete_banlist(connection, ctx):
-    ctx.setdefault(origin=connection.server.ip)
+    ctx.setdefault(origin=connection.endpoint.address)
     db.delete_banlist_entry(**ctx)
-    logger.info(f'Removed banlist entry via ServerNet connection {connection.ip}')
+    logger.info(f'Removed banlist entry via ServerNet connection {connection.address}')
 
 
-@callback('delist', rename(id='server_id'), sync=True)
-def on_delist(connection, server_id):
-    server = db.get_server(server_id)
+@server_job('delist', args={'id'}, sync=True)
+def on_delist(connection, ctx):
+    server_id = ctx['id']
+    server = db.read_server(server_id)
     if server:
         if server.remote:
             db.delete_server(server_id)
+            logger.info(f'Delisted server via ServerNet connection {connection.address}')
         else:
             logger.error(
-                f'Mirror {connection.ip} tried to delist server {server_id}, '
+                f'Mirror {connection.address} tried to delist server {server_id}, '
                 f'but the server was not remote!'
             )
             connection.sync_flag = False
     else:
         logger.error(
-            f'Mirror {connection.ip} tried to delist server {server_id}, '
+            f'Mirror {connection.address} tried to delist server {server_id}, '
             f'but the server was unknown'
         )
         connection.sync_flag = False
 
 
-@callback('add-mirror')
-def on_add_mirror(connection):
-    pass
+@server_job('add-mirror', args={'name', 'address'}, sync=True)
+def on_add_mirror(connection, name, address):
+    if db.read_mirror(name, address):
+        logger.info(
+            f'Mirror {connection.address} tried adding mirror {address}, '
+            f'but name or address already known'
+        )
+        return
+    if name == LISTSERVER_RESERVED_MIRROR_NAME:
+        logger.error(
+            f'{LISTSERVER_RESERVED_MIRROR_NAME} is a reserved name for mirrors, %s tried using it'
+        )
+        connection.sync_flag = False
+        return
+    db.create_mirror(name, address)
+    connection.request_job('hello', {'from': connection.endpoint.address})
+    logger.info(f'Added mirror {address} via ServerNet connection {connection.address}')
 
 
-@callback('delete-mirror')
-def on_delete_mirror(connection):
-    pass
+@server_job('delete-mirror', args={'name', 'address'}, sync=True)
+def on_delete_mirror(connection, name, address):
+    if not db.read_mirror(name, address):
+        logger.info(f'Mirror {connection.address} tried to remove mirror {address}, but not known')
+        return
+    db.delete_mirror(name, address)
+    logger.info(f'Deleted mirror {address} via ServerNet connection {connection.address}')
 
 
-@callback('send-motd')
+@server_job('send-motd')
 def on_set_motd(connection):
     pass
 
 
-@callback('request')
+@server_job('request')
 def on_request(connection):
     pass
 
 
-@callback('hello')
-def on_hello(connection):
-    call(on_request, connection)
+@server_job('hello', args={'from'})
+def on_hello(connection, ctx):
+    from_ = ctx['from']
+    servernet_forward(on_request, connection)
 
 
-@callback('request-log')
+@server_job('request-log')
 def on_request_log(connection):
     pass
 
 
-@callback('request-log-from')
+@server_job('request-log-from')
 def on_request_log_from(connection):
     pass
 
 
-@callback('send-log')
+@server_job('send-log')
 def on_send_log(connection):
     pass
 
 
-@callback('reload')
+@server_job('reload')
 def on_reload(connection):
     pass
 
 
-@callback('get-servers')
+@server_job('get-servers')
 def on_get_servers(connection):
     pass
 
 
-@callback('get-banlist')
+@server_job('get-banlist')
 def on_get_banlist(connection):
     pass
 
 
-@callback('get-motd')
+@server_job('get-motd')
 def on_get_motd(connection):
     pass
 
 
-@callback('get-motd-expires')
+@server_job('get-motd-expires')
 def on_get_motd_expires(connection):
     pass
 
 
-@callback('get-mirrors', sync=True)
+@server_job('get-mirrors', sync=True)
 def on_get_mirrors(connection):
-    mirrors = db.get_mirrors()
+    mirrors = db.read_mirrors()
     payload = connection.encode_payload([
         dict(name=name, address=address)
         for name, address in mirrors
     ])
-    connection.msg(payload)
+    connection.write(payload)
 
 
-callback('ping', func=None, sync=False)
+server_job('ping', func=None, sync=False)
