@@ -7,20 +7,21 @@ import typing
 import blinker
 from loguru import logger
 
+from jj2.constants import LISTSERVER_RESERVED_MIRROR_NAME
 from jj2.endpoints import Connection, Server
 from jj2.listservers import db
-from jj2.constants import LISTSERVER_RESERVED_MIRROR_NAME
 
 if typing.TYPE_CHECKING:
     from typing import Any
     from typing import Callable
+    from typing import Iterable
     from jj2.endpoints import ConnectionPool
 
 
 @dataclasses.dataclass
 class Job:
     action: 'str'
-    data: typing.Iterable
+    data: 'Iterable'
     origin: 'str'
 
     def validate(self):
@@ -190,7 +191,7 @@ class ServerNet(Server):
 
 
 _ORIG_FUNC_ATTR = 'func'
-_CONTEXT_DI_REF = 'ctx'
+_CONTEXT_REFERENCE = 'ctx'
 _FUNC_MISSING = object()
 
 
@@ -202,7 +203,7 @@ def job(
 ):
     """Register a ServerNet job callback."""
 
-    def job_decorator(decorated_func: Callable):
+    def job_decorator(decorated_func: 'Callable'):
         nonlocal func
         if not decorated_func:
             func = decorated_func
@@ -213,7 +214,7 @@ def job(
         )
 
         @functools.wraps(func)
-        def job_wrapper(connection: ServerNetConnection, /, **ctx: Any):
+        def job_wrapper(connection: 'ServerNetConnection', /, **ctx: 'Any'):
             compat_action = connection.job.action == action
 
             args_ok = True
@@ -236,8 +237,8 @@ def job(
                         if param in parameters
                     }
 
-                if _CONTEXT_DI_REF in parameters:
-                    ctx[_CONTEXT_DI_REF] = connection.ctx
+                if _CONTEXT_REFERENCE in parameters:
+                    ctx[_CONTEXT_REFERENCE] = connection.ctx
 
                 if sync is not None:
                     connection.synced = sync
