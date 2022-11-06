@@ -7,11 +7,11 @@ from jj2.listservers import db
 class ASCIIListConnection(Connection):
     MSG_ENCODING = 'ASCII'
 
-    async def run_once(self, pool=None):
-        logger.info(f"Sending ASCII server list to {self.address}")
+    async def communicate(self, pool=None):
+        logger.info(f'Sending ASCII server list to {self.host}')
 
         db.delete_remote_servers()
-        servers = db.read_servers(bind_listserver=self.endpoint.job)
+        servers = db.read_servers(bind_listserver=self.local_address)
         self.message("".join(server.asciilist_repr for server in servers))
         self.kill()
 

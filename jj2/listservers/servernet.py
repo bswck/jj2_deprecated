@@ -14,6 +14,7 @@ from jj2.constants import LISTSERVER_RESERVED_MIRROR_NAME
 if typing.TYPE_CHECKING:
     from typing import Any
     from typing import Callable
+    from jj2.endpoints import ConnectionPool
 
 
 @dataclasses.dataclass
@@ -45,34 +46,39 @@ class ServerNetConnection(Connection):
         'send-log', 'request-log-from'
     }
 
-    def __init__(self, endpoint, reader, writer, mirror_pool):
-        super().__init__(endpoint, reader, writer)
+    def __init__(
+        self,
+        template: 'ServerNet',
+        reader, writer,
+        mirror_pool: 'ConnectionPool'
+    ):
+        super().__init__(template, reader, writer)
         self.buffer = bytearray()
         self.read_attempts = 0
         self.sync_chunks = set()
         self.mirror_pool = mirror_pool
-        self.sync_flag = None
+        self.synced = None
         self.ctx = {}
         self.job = None
 
     async def validate(self, pool=None):
-        if self.endpoint.is_ssl:
+        if self.template.is_ssl:
             if not self.is_localhost:
                 logger.warning(
-                    f'Outside IP {self.address} '
+                    f'Outside IP {self.host} '
                     'tried to connect to the remote admin API'
                 )
                 self.kill()
         elif (
-            self.address not in db.read_mirrors().values()
+            self.host not in db.read_mirrors().values()
             or self.is_localhost
         ):
             logger.warning(
                 'Unauthorized ServerNet connection '
-                f'from {self.address}:{self.endpoint.port}'
+                f'from {self.host}:{self.port}'
             )
             self.kill()
-        db.update_mirror(self.address)
+        db.update_mirror(self.host)
 
     @property
     def can_sync(self):
@@ -84,10 +90,10 @@ class ServerNetConnection(Connection):
 
     def attempt_read(self):
         try:
-            data = self.receive(2048)
+            data = self.read(2048)
         except OSError:
             logger.error(
-                f'ServerNet connection from {self.address} '
+                f'ServerNet connection from {self.host} '
                 'broke while receiving data'
             )
             return self.kill()
@@ -108,34 +114,34 @@ class ServerNetConnection(Connection):
     def make_job(self, payload):
         if self.buffer and not payload:
             logger.error(
-                f'ServerNet update received from {self.address}, '
+                f'ServerNet update received from {self.host}, '
                 f'but could not acquire valid payload (got {self.buffer})'
             )
             return self.kill()
 
         if not all(payload.get(key) for key in dataclasses.fields(Job)):
             logger.error(
-                f'ServerNet update received from {self.address}, '
+                f'ServerNet update received from {self.host}, '
                 'but JSON was incomplete'
             )
             return self.kill()
 
-        if payload['origin'].strip() == self.endpoint.address:
+        if payload['origin'].strip() == self.local_address:
             return self.kill()
 
-        job = self.job_class(**payload)
+        job_obj = self.job_class(**payload)
         try:
-            job.validate()
+            job_obj.validate()
         except ValueError:
             logger.error(
-                f'ServerNet update received from {self.address}, '
+                f'ServerNet update received from {self.host}, '
                 'but the data was incorrect'
             )
             return self.kill()
 
-        self.job = job
+        self.job = job_obj
 
-    async def run_once(self, pool=None):
+    async def communicate(self, pool=None):
         self.attempt_read()
         payload = self.attempt_decode()
         if self.read_attempts > self.MAX_READ_ATTEMPTS:
@@ -159,22 +165,22 @@ class ServerNetConnection(Connection):
 
     def request_job(self, action, *data, origin=None):
         if origin is None:
-            origin = self.endpoint.address
-        job = self.job_class(
+            origin = self.local_address
+        job_obj = self.job_class(
             action=action,
             data=list(data),
             origin=origin
         )
-        payload = self.encode_payload(job)
+        payload = self.encode_payload(job_obj)
         self.write(payload)
 
     def sync_job(self):
-        job = self.job_class(
+        job_obj = self.job_class(
             action=self.job.action,
             data=list(self.sync_chunks),
-            origin=self.address
+            origin=self.host
         )
-        payload = self.encode_payload(job)
+        payload = self.encode_payload(job_obj)
         self.sync(self.mirror_pool, payload)
 
 
@@ -188,13 +194,13 @@ _CONTEXT_DI_REF = 'ctx'
 _FUNC_MISSING = object()
 
 
-def servernet_job(
+def job(
     action: 'str',
     func: 'Callable | object | None' = _FUNC_MISSING, *,
     args: 'set[str] | None' = None,
     sync: 'bool | None' = None
 ):
-    """Register a ServerNet job function."""
+    """Register a ServerNet job callback."""
 
     def job_decorator(decorated_func: Callable):
         nonlocal func
@@ -217,9 +223,9 @@ def servernet_job(
                 if value is None:
                     logger.error(
                         'Received incomplete server data '
-                        f'from ServerNet connection {connection.address}'
+                        f'from ServerNet connection {connection.host}'
                     )
-                    connection.sync_flag = False
+                    connection.synced = False
                     args_ok = False
 
             if args_ok:
@@ -234,11 +240,11 @@ def servernet_job(
                     ctx[_CONTEXT_DI_REF] = connection.ctx
 
                 if sync is not None:
-                    connection.sync_flag = sync
+                    connection.synced = sync
 
                 func(connection, **ctx)
 
-            do_sync = connection.sync_flag
+            do_sync = connection.synced
 
             if compat_action and do_sync:
                 updated_ctx = connection.ctx
@@ -266,59 +272,59 @@ def servernet_forward(func, *args, **kwargs):
     return func(*args, **kwargs)
 
 
-@servernet_job('server', args={'id'}, sync=True)
-def on_server(connection, ctx):
+@job('server', args={'id'}, sync=True)
+def on_server(_, ctx):
     server_id = ctx['id']
     ctx.update(remote=1)
     db.update_server(server_id, **ctx)
 
 
-@servernet_job('add-banlist', sync=True)
+@job('add-banlist', sync=True)
 def on_add_banlist(connection, ctx):
-    ctx.setdefault(origin=connection.endpoint.address)
+    ctx.setdefault(origin=connection.create_endpoint.host)
     db.create_banlist_entry(**ctx)
     logger.info(
-        f'Added banlist entry via ServerNet connection {connection.address}'
+        f'Added banlist entry via ServerNet connection {connection.host}'
     )
 
 
-@servernet_job('delete-banlist', sync=True)
+@job('delete-banlist', sync=True)
 def on_delete_banlist(connection, ctx):
-    ctx.setdefault(origin=connection.endpoint.address)
+    ctx.setdefault(origin=connection.create_endpoint.host)
     db.delete_banlist_entry(**ctx)
     logger.info(
-        f'Removed banlist entry via ServerNet connection {connection.address}'
+        f'Removed banlist entry via ServerNet connection {connection.host}'
     )
 
 
-@servernet_job('delist', args={'id'}, sync=True)
+@job('delist', args={'id'}, sync=True)
 def on_delist(connection, ctx):
     server_id = ctx['id']
     server = db.read_server(server_id)
     if server:
         if server.remote:
             db.delete_server(server_id)
-            logger.info(f'Delisted server via ServerNet connection {connection.address}')
+            logger.info(f'Delisted server via ServerNet connection {connection.host}')
         else:
             logger.error(
-                f'Mirror {connection.address} tried '
+                f'Mirror {connection.host} tried '
                 f'to delist server {server_id}, '
                 'but the server was not remote!'
             )
-            connection.sync_flag = False
+            connection.synced = False
     else:
         logger.error(
-            f'Mirror {connection.address} tried to '
+            f'Mirror {connection.host} tried to '
             f'delist server {server_id}, but the server was unknown'
         )
-        connection.sync_flag = False
+        connection.synced = False
 
 
-@servernet_job('add-mirror', args={'name', 'address'}, sync=True)
+@job('add-mirror', args={'name', 'address'}, sync=True)
 def on_add_mirror(connection, name, address):
     if db.read_mirror(name, address):
         logger.info(
-            f'Mirror {connection.address} tried to add mirror {address}, '
+            f'Mirror {connection.host} tried to add mirror {address}, '
             f'but name or address already known'
         )
         return
@@ -327,85 +333,85 @@ def on_add_mirror(connection, name, address):
             f'{LISTSERVER_RESERVED_MIRROR_NAME} is a reserved '
             f'name for mirrors, %s tried to use it'
         )
-        connection.sync_flag = False
+        connection.synced = False
         return
     db.create_mirror(name, address)
-    connection.request_job('hello', {'from': connection.endpoint.address})
-    logger.info(f'Added mirror {address} via ServerNet connection {connection.address}')
+    connection.request_job('hello', {'from': connection.local_host})
+    logger.info(f'Added mirror {address} via ServerNet connection {connection.host}')
 
 
-@servernet_job('delete-mirror', args={'name', 'address'}, sync=True)
+@job('delete-mirror', args={'name', 'address'}, sync=True)
 def on_delete_mirror(connection, name, address):
     if not db.read_mirror(name, address):
         logger.info(
-            f'Mirror {connection.address} tried to '
+            f'Mirror {connection.host} tried to '
             f'remove mirror {address}, but not known'
         )
         return
     db.delete_mirror(name, address)
-    logger.info(f'Deleted mirror {address} via ServerNet connection {connection.address}')
+    logger.info(f'Deleted mirror {address} via ServerNet connection {connection.host}')
 
 
-@servernet_job('send-motd')
+@job('send-motd')
 def on_set_motd(connection):
     pass
 
 
-@servernet_job('request')
+@job('request')
 def on_request(connection):
     pass
 
 
-@servernet_job('hello', args={'from'})
+@job('hello', args={'from'})
 def on_hello(connection, ctx):
     servernet_forward(on_request, connection)
 
 
-@servernet_job('request-log')
+@job('request-log')
 def on_request_log(connection):
     pass
 
 
-@servernet_job('request-log-from')
+@job('request-log-from')
 def on_request_log_from(connection):
     pass
 
 
-@servernet_job('send-log')
+@job('send-log')
 def on_send_log(connection):
     pass
 
 
-@servernet_job('reload')
+@job('reload')
 def on_reload(connection):
     pass
 
 
-@servernet_job('get-servers')
+@job('get-servers')
 def on_get_servers(connection):
     pass
 
 
-@servernet_job('get-banlist')
+@job('get-banlist')
 def on_get_banlist(connection):
     pass
 
 
-@servernet_job('get-motd')
+@job('get-motd')
 def on_get_motd(connection):
     pass
 
 
-@servernet_job('get-motd-expires')
+@job('get-motd-expires')
 def on_get_motd_expires(connection):
     pass
 
 
-@servernet_job('get-mirrors', sync=True)
+@job('get-mirrors', sync=True)
 def on_get_mirrors(connection):
     mirrors = [dataclasses.asdict(mirror) for mirror in db.read_mirrors()]
     payload = connection.encode_payload(mirrors)
     connection.write(payload)
 
 
-servernet_job('ping', func=None, sync=False)
+job('ping', func=None, sync=False)

@@ -159,7 +159,7 @@ class GameServer:
     def from_binarylist_repr(cls, binarylist_repr: bytes, isolated: 'bool' = False):
         data = cls._BINARYLIST_REPR_PATTERN.parse(binarylist_repr)
         return cls(
-            address=data.address,
+            address=data.host,
             port=data.port,
             name=data.name.decode(),
             isolated=isolated
@@ -208,7 +208,7 @@ class GameServer:
 @dataclasses.dataclass
 class MessageOfTheDay:
     text: 'str | None'
-    expires: 'datetime.datetime'
+    expires: 'datetime.datetime | None'
 
     def __str__(self):
         if self.text and datetime.datetime.utcnow() < self.expires:

@@ -7,8 +7,8 @@ from jj2.listservers import db
 class MOTDConnection(Connection):
     MSG_ENCODING = 'ASCII'
 
-    async def run_once(self, pool=None):
-        logger.info(f"Sending MOTD to {self.address}")
+    async def communicate(self, pool=None):
+        logger.info(f"Sending MOTD to {self.host}")
         motd = db.read_motd()
         self.message(str(motd))
         self.kill()

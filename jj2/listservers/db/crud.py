@@ -1,9 +1,9 @@
 import datetime
 
-from jj2.listservers.classes import BanlistEntry
-from jj2.listservers.classes import GameServer
-from jj2.listservers.classes import MessageOfTheDay
-from jj2.listservers.classes import Mirror
+from jj2.listservers.entities import BanlistEntry
+from jj2.listservers.entities import GameServer
+from jj2.listservers.entities import MessageOfTheDay
+from jj2.listservers.entities import Mirror
 from jj2.listservers.db.api import get_session
 from jj2.listservers.db.models import BanlistEntryModel
 from jj2.listservers.db.models import MirrorModel
@@ -66,7 +66,7 @@ def read_servers(
     ]
 
 
-def update_server(server_id, **traits):
+def update_server(server_id: 'str', **traits):
     with get_session() as session:
         server = read_server(server_id)
         if not server:
@@ -77,7 +77,11 @@ def update_server(server_id, **traits):
         session.commit()
 
 
-def server_from_model(server_model, server_cls=GameServer, bind_listserver=None):
+def server_from_model(
+    server_model: 'ServerModel',
+    server_cls: 'type[GameServer] | None' = GameServer,
+    bind_listserver: 'str | None' = None
+):
     server = None
     if server_model:
         server = server_cls(
@@ -98,7 +102,7 @@ def server_from_model(server_model, server_cls=GameServer, bind_listserver=None)
 
 
 def read_server(
-    server_id,
+    server_id: 'str',
     server_cls: 'type[GameServer] | None' = GameServer,
     bind_serverlist: 'str | None' = None
 ):
@@ -113,23 +117,24 @@ def read_server(
         return server_model
 
 
-def delete_remote_servers(timeout=40):
+def delete_remote_servers(timeout: 'int | None' = 40):
     with get_session() as session:
-        (
+        query = (
             session
             .query(ServerModel)
-            .filter(
-                ServerModel.remote == 1,
+            .filter(ServerModel.remote == 1)
+        )
+        if timeout:
+            query.filter(
                 ServerModel.lifesign < (
                     datetime.datetime.utcnow() - datetime.timedelta(seconds=timeout)
                 ).timestamp()
             )
-            .delete()
-        )
+        query.delete()
         session.commit()
 
 
-def delete_server(server_id):
+def delete_server(server_id: 'str'):
     server_model = read_server(server_id, server_cls=None)
     with get_session() as session:
         session.delete(server_model)
@@ -138,20 +143,20 @@ def delete_server(server_id):
 
 # Mirrors
 
-def create_mirror(name, address):
+def create_mirror(name: 'str', address: 'str'):
     with get_session() as session:
         mirror_model = MirrorModel(name, address)
         session.add(mirror_model)
         session.commit()
 
 
-def read_mirror(name, address, mirror_cls: 'type[Mirror] | None' = Mirror):
+def read_mirror(name: 'str', address: 'str', mirror_cls: 'type[Mirror] | None' = Mirror):
     with get_session() as session:
         mirror_model = session.get(MirrorModel, [name, address])
     ret = None
     if mirror_model:
         if mirror_cls:
-            ret = Mirror(mirror_model.name, mirror_model.address)
+            ret = Mirror(mirror_model.name, mirror_model.host)
         else:
             ret = mirror_model
     return ret
@@ -167,7 +172,7 @@ def read_mirrors(mirror_cls: 'type[Mirror] | None' = Mirror):
     ]
 
 
-def update_mirror(address):
+def update_mirror(address: 'str'):
     with get_session() as session:
         (
             session
@@ -178,7 +183,7 @@ def update_mirror(address):
         session.commit()
 
 
-def delete_mirror(name, address):
+def delete_mirror(name: 'str', address: 'str'):
     with get_session() as session:
         mirror_model = read_mirror(name, address, mirror_cls=None)
         if mirror_model:
@@ -201,7 +206,7 @@ def create_banlist_entry(**model_args):
 
 def read_banlist_entries(
     *, entry_cls: 'type[BanlistEntry] | None' = BanlistEntry,
-    **filter_by_args
+    **criterion
 ):
     with get_session() as session:
         return [
@@ -210,7 +215,7 @@ def read_banlist_entries(
             for entry_model in (
                 session
                 .query(BanlistEntryModel)
-                .filter_by(**filter_by_args)
+                .filter_by(**criterion)
                 .all()
             )
         ]
@@ -218,13 +223,13 @@ def read_banlist_entries(
 
 def read_banlist_entry(
     *, entry_cls: 'type[BanlistEntry] | None' = BanlistEntry,
-    **filter_by_args
-):
-    entries = read_banlist_entries(entry_cls=entry_cls, **filter_by_args)
+    **criterion
+) -> 'BanlistEntry | BanlistEntryModel | None':
+    entries = read_banlist_entries(entry_cls=entry_cls, **criterion)
     return entries[0] if entries else None
 
 
-def delete_banlist_entry(entry_model=None, **model_args):
+def delete_banlist_entry(entry_model: 'BanlistEntryModel | None' = None, **model_args):
     if entry_model is None:
         entry_model = read_banlist_entry(**model_args, entry_cls=None)
     with get_session() as session:
@@ -235,15 +240,15 @@ def delete_banlist_entry(entry_model=None, **model_args):
 # MOTD
 
 def read_motd(motd_cls: 'type[MessageOfTheDay] | None' = MessageOfTheDay):
+    expires_model = None
     with get_session() as session:
         model = session.get(SettingModel, "motd")
         if model:
             text = model.value
-            soon = (datetime.datetime.utcnow() + datetime.timedelta(seconds=10)).timestamp()
             expires_model = session.get(SettingModel, "motd-expires")
-            expires = soon
-            if expires_model:
-                expires = expires_model.value
+    expires = None
+    if expires_model:
+        expires = expires_model.value
     if motd_cls:
         return MessageOfTheDay(text, expires)
     return model, expires_model
