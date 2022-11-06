@@ -45,7 +45,8 @@ def setup_motd_fields(_t, connection, **_k):
     values = (
         "motd", "",
         "motd-updated", "0",
-        "motd-expires", (datetime.datetime.utcnow() + datetime.timedelta(3 * 86400)).timestamp()
+        "motd-expires",
+        (datetime.datetime.utcnow() + datetime.timedelta(seconds=3 * 86400)).timestamp()
     )
     connection.execute(stmt, values)
 

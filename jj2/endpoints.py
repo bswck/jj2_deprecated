@@ -16,6 +16,7 @@ if typing.TYPE_CHECKING:
     from asyncio import StreamWriter
     from typing import Any
     from typing import ClassVar
+    from typing import Callable  # noqa: F401
 
 
 _IPAddressT = typing.ForwardRef('ipaddress.IPv4Address | ipaddress.IPv6Address | None')
