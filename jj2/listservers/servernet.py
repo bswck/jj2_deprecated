@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import dataclasses
 import functools
 import inspect
@@ -20,9 +22,9 @@ if typing.TYPE_CHECKING:
 
 @dataclasses.dataclass
 class Job:
-    action: 'str'
-    data: 'Iterable'
-    origin: 'str'
+    action: str
+    data: Iterable
+    origin: str
 
     def validate(self):
         if not (
@@ -49,11 +51,11 @@ class ServerNetConnection(Connection):
 
     def __init__(
         self,
-        template: 'ServerNet',
+        architecture: ServerNet,
         reader, writer,
-        mirror_pool: 'ConnectionPool'
+        mirror_pool: ConnectionPool
     ):
-        super().__init__(template, reader, writer)
+        super().__init__(architecture, reader, writer)
         self.buffer = bytearray()
         self.read_attempts = 0
         self.sync_chunks = set()
@@ -63,7 +65,7 @@ class ServerNetConnection(Connection):
         self.job = None
 
     async def validate(self, pool=None):
-        if self.template.is_ssl:
+        if self.architecture.is_ssl:
             if not self.is_localhost:
                 logger.warning(
                     f'Outside IP {self.host} '
@@ -196,14 +198,14 @@ _FUNC_MISSING = object()
 
 
 def job(
-    action: 'str',
-    func: 'Callable | object | None' = _FUNC_MISSING, *,
-    args: 'set[str] | None' = None,
-    sync: 'bool | None' = None
+    action: str,
+    func: Callable | object | None = _FUNC_MISSING, *,
+    args: set[str] | None = None,
+    sync: bool | None = None
 ):
     """Register a ServerNet job callback."""
 
-    def job_decorator(decorated_func: 'Callable'):
+    def job_decorator(decorated_func: Callable):
         nonlocal func
         if not decorated_func:
             func = decorated_func
@@ -214,7 +216,7 @@ def job(
         )
 
         @functools.wraps(func)
-        def job_wrapper(connection: 'ServerNetConnection', /, **ctx: 'Any'):
+        def job_wrapper(connection: ServerNetConnection, /, **ctx: Any):
             compat_action = connection.job.action == action
 
             args_ok = True

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from loguru import logger
 
 from jj2.endpoints import Connection, Server
@@ -13,15 +15,15 @@ DUMMY_SERVERS = (
 
 
 class BinaryListConnection(Connection):
-    payload_header: 'bytes' = b"\x07LIST\x01\x01"
-    template: 'BinaryListServer'
+    payload_header: bytes = b"\x07LIST\x01\x01"
+    architecture: BinaryListServer
 
     async def communicate(self, pool=None):
         logger.info(f'Sending binary server list to {self.host}')
 
         db.delete_remote_servers()
         servers = []
-        if self.template.use_dummy_servers:
+        if self.architecture.use_dummy_servers:
             servers.extend(DUMMY_SERVERS)
         servers.extend(db.read_servers(vanilla=True, bind_listserver=self.local_address))
         payload = self.payload_header + b''.join(server.binarylist_repr for server in servers)

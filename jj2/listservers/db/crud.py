@@ -36,10 +36,10 @@ __all__ = (
 # Servers
 
 def read_servers(
-    vanilla: 'bool' = False,
-    mirror: 'bool' = False,
-    bind_listserver: 'str | None' = None,
-    server_cls: 'type[GameServer] | None' = GameServer,
+    vanilla: bool = False,
+    mirror: bool = False,
+    bind_listserver: str | None = None,
+    server_cls: type[GameServer] | None = GameServer,
 ):
     with get_session() as session:
         query = session.query(ServerModel)
@@ -66,7 +66,7 @@ def read_servers(
     ]
 
 
-def update_server(server_id: 'str', **traits):
+def update_server(server_id: str, **traits):
     with get_session() as session:
         server = read_server(server_id)
         if not server:
@@ -78,9 +78,9 @@ def update_server(server_id: 'str', **traits):
 
 
 def server_from_model(
-    server_model: 'ServerModel',
-    server_cls: 'type[GameServer] | None' = GameServer,
-    bind_listserver: 'str | None' = None
+    server_model: ServerModel,
+    server_cls: type[GameServer] | None = GameServer,
+    bind_listserver: str | None = None
 ):
     server = None
     if server_model:
@@ -102,9 +102,9 @@ def server_from_model(
 
 
 def read_server(
-    server_id: 'str',
-    server_cls: 'type[GameServer] | None' = GameServer,
-    bind_serverlist: 'str | None' = None
+    server_id: str,
+    server_cls: type[GameServer] | None = GameServer,
+    bind_serverlist: str | None = None
 ):
     with get_session() as session:
         server_model = session.get(ServerModel, server_id)
@@ -117,7 +117,7 @@ def read_server(
         return server_model
 
 
-def delete_remote_servers(timeout: 'int | None' = 40):
+def delete_remote_servers(timeout: int | None = 40):
     with get_session() as session:
         query = (
             session
@@ -134,7 +134,7 @@ def delete_remote_servers(timeout: 'int | None' = 40):
         session.commit()
 
 
-def delete_server(server_id: 'str'):
+def delete_server(server_id: str):
     server_model = read_server(server_id, server_cls=None)
     with get_session() as session:
         session.delete(server_model)
@@ -143,14 +143,14 @@ def delete_server(server_id: 'str'):
 
 # Mirrors
 
-def create_mirror(name: 'str', address: 'str'):
+def create_mirror(name: str, address: str):
     with get_session() as session:
         mirror_model = MirrorModel(name, address)
         session.add(mirror_model)
         session.commit()
 
 
-def read_mirror(name: 'str', address: 'str', mirror_cls: 'type[Mirror] | None' = Mirror):
+def read_mirror(name: str, address: str, mirror_cls: type[Mirror] | None = Mirror):
     with get_session() as session:
         mirror_model = session.get(MirrorModel, [name, address])
     ret = None
@@ -162,7 +162,7 @@ def read_mirror(name: 'str', address: 'str', mirror_cls: 'type[Mirror] | None' =
     return ret
 
 
-def read_mirrors(mirror_cls: 'type[Mirror] | None' = Mirror):
+def read_mirrors(mirror_cls: type[Mirror] | None = Mirror):
     with get_session() as session:
         mirror_models = session.query(MirrorModel).all()
     return [
@@ -172,7 +172,7 @@ def read_mirrors(mirror_cls: 'type[Mirror] | None' = Mirror):
     ]
 
 
-def update_mirror(address: 'str'):
+def update_mirror(address: str):
     with get_session() as session:
         (
             session
@@ -183,7 +183,7 @@ def update_mirror(address: 'str'):
         session.commit()
 
 
-def delete_mirror(name: 'str', address: 'str'):
+def delete_mirror(name: str, address: str):
     with get_session() as session:
         mirror_model = read_mirror(name, address, mirror_cls=None)
         if mirror_model:
@@ -205,7 +205,7 @@ def create_banlist_entry(**model_args):
 
 
 def read_banlist_entries(
-    *, entry_cls: 'type[BanlistEntry] | None' = BanlistEntry,
+    *, entry_cls: type[BanlistEntry] | None = BanlistEntry,
     **criterion
 ):
     with get_session() as session:
@@ -222,14 +222,14 @@ def read_banlist_entries(
 
 
 def read_banlist_entry(
-    *, entry_cls: 'type[BanlistEntry] | None' = BanlistEntry,
+    *, entry_cls: type[BanlistEntry] | None = BanlistEntry,
     **criterion
 ) -> 'BanlistEntry | BanlistEntryModel | None':
     entries = read_banlist_entries(entry_cls=entry_cls, **criterion)
     return entries[0] if entries else None
 
 
-def delete_banlist_entry(entry_model: 'BanlistEntryModel | None' = None, **model_args):
+def delete_banlist_entry(entry_model: BanlistEntryModel | None = None, **model_args):
     if entry_model is None:
         entry_model = read_banlist_entry(**model_args, entry_cls=None)
     with get_session() as session:
@@ -239,7 +239,7 @@ def delete_banlist_entry(entry_model: 'BanlistEntryModel | None' = None, **model
 
 # MOTD
 
-def read_motd(motd_cls: 'type[MessageOfTheDay] | None' = MessageOfTheDay):
+def read_motd(motd_cls: type[MessageOfTheDay] | None = MessageOfTheDay):
     expires_model = None
     with get_session() as session:
         model = session.get(SettingModel, "motd")

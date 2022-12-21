@@ -39,13 +39,13 @@ class SettingModel(Base):
 @event.listens_for(SettingModel, 'after_create')
 def setup_motd_fields(_t, connection, **_k):
     stmt = (
-       f"INSERT INTO {SettingModel.__tablename__} "
-       f"(item, value) VALUES (?, ?), (?, ?), (?, ?)"
+       f'INSERT INTO {SettingModel.__tablename__} '
+       f'(item, value) VALUES (?, ?), (?, ?), (?, ?)'
     )
     values = (
-        "motd", "",
-        "motd-updated", "0",
-        "motd-expires",
+        'motd', '',
+        'motd-updated', '0',
+        'motd-expires',
         (datetime.datetime.utcnow() + datetime.timedelta(seconds=3 * 86400)).timestamp()
     )
     connection.execute(stmt, values)

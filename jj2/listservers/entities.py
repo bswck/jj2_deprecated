@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import dataclasses
 import datetime
 import ipaddress
@@ -15,33 +17,33 @@ if typing.TYPE_CHECKING:
 
 
 class GameServer:
-    name: 'str' = 'unknown'
-    remote: 'bool' = False
-    private: 'bool' = False
-    mode: 'str' = 'capture'
-    version: 'str' = '1.24'
-    listed_at: 'datetime.datetime | None' = None
-    clients: 'int | None' = None
-    max_clients: 'int | None' = None
-    listserver: 'str | None' = None
-    plus_version: 'str | None' = None
-    isolated: 'bool' = False
+    name: str = 'unknown'
+    remote: bool = False
+    private: bool = False
+    mode: str = 'capture'
+    version: str = '1.24'
+    listed_at: datetime.datetime | None = None
+    clients: int | None = None
+    max_clients: int | None = None
+    listserver: str | None = None
+    plus_version: str | None = None
+    isolated: bool = False
 
     def __init__(
         self,
-        address: 'str | int | bytes | ipaddress.IPv4Address | ipaddress.IPv6Address',
-        port: 'int' = DEFAULT_GAME_SERVER_PORT, *,
-        name: 'str | None' = None,
-        remote: 'bool | None' = None,
-        private: 'bool | None' = None,
-        mode: 'str | None' = None,
-        version: 'str | None' = None,
-        listed_at: 'datetime.datetime | None' = None,
-        clients: 'int | None' = None,
-        max_clients: 'int | None' = None,
-        listserver: 'str | None' = None,
-        plus_version: 'str | None' = None,
-        isolated: 'bool' = False,
+        address: str | int | bytes | ipaddress.IPv4Address | ipaddress.IPv6Address,
+        port: int = DEFAULT_GAME_SERVER_PORT, *,
+        name: str | None = None,
+        remote: bool | None = None,
+        private: bool | None = None,
+        mode: str | None = None,
+        version: str | None = None,
+        listed_at: datetime.datetime | None = None,
+        clients: int | None = None,
+        max_clients: int | None = None,
+        listserver: str | None = None,
+        plus_version: str | None = None,
+        isolated: bool = False,
     ):
         """
         Parameters
@@ -108,9 +110,9 @@ class GameServer:
         ip = ipaddress.ip_address(ip).compressed
         return sys.intern(f'{ip}:{port}')
 
-    _servers: 'ClassVar[dict[Hashable, GameServer]]' = {}
+    _servers: ClassVar[dict[Hashable, GameServer]] = {}
 
-    def __new__(cls, *args, isolated: 'bool' = False, **kwargs) -> 'GameServer':
+    def __new__(cls, *args, isolated: bool = False, **kwargs) -> 'GameServer':
         key = cls.get_instance_key(*args, **kwargs)
         if not isolated and key in cls._servers:
             return cls._servers[key]
@@ -156,7 +158,7 @@ class GameServer:
         ))
 
     @classmethod
-    def from_binarylist_repr(cls, binarylist_repr: bytes, isolated: 'bool' = False):
+    def from_binarylist_repr(cls, binarylist_repr: bytes, isolated: bool = False):
         data = cls._BINARYLIST_REPR_PATTERN.parse(binarylist_repr)
         return cls(
             address=data.host,
@@ -180,7 +182,7 @@ class GameServer:
         )
 
     @classmethod
-    def from_asciilist_repr(cls, string: 'str', isolated: 'bool' = False):
+    def from_asciilist_repr(cls, string: str, isolated: bool = False):
         match = re.fullmatch(cls._ASCIILIST_REPR_PATTERN, string.strip())
         inst = None
         if match:
@@ -207,8 +209,8 @@ class GameServer:
 
 @dataclasses.dataclass
 class MessageOfTheDay:
-    text: 'str | None'
-    expires: 'datetime.datetime | None'
+    text: str | None
+    expires: datetime.datetime | None
 
     def __str__(self):
         if self.text and datetime.datetime.utcnow() < self.expires:
@@ -218,14 +220,14 @@ class MessageOfTheDay:
 
 @dataclasses.dataclass
 class BanlistEntry:
-    address: 'str'
-    type: 'str'
-    note: 'str'
-    origin: 'str'
-    reserved: 'str'
+    address: str
+    type: str
+    note: str
+    origin: str
+    reserved: str
 
 
 @dataclasses.dataclass
 class Mirror:
-    name: 'str'
-    address: 'str'
+    name: str
+    address: str
