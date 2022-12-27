@@ -31,7 +31,7 @@ class GameServer:
 
     def __init__(
         self,
-        address: str | int | bytes | ipaddress.IPv4Address | ipaddress.IPv6Address,
+        ip_address: str | int | bytes | ipaddress.IPv4Address | ipaddress.IPv6Address,
         port: int = DEFAULT_GAME_SERVER_PORT, *,
         name: str | None = None,
         remote: bool | None = None,
@@ -48,7 +48,7 @@ class GameServer:
         """
         Parameters
         ----------
-        address : str or int or bytes or ipaddress.IPv4Address or ipaddress.IPv6Address
+        ip_address : str or int or bytes or ipaddress.IPv4Address or ipaddress.IPv6Address
             The IPv4 or IPv6 address of this server.
         port : int
             The network port of this server.
@@ -79,7 +79,7 @@ class GameServer:
             If the new GameServer instance is isolated, no strong reference is made to it
             in the :attribute:`_servers` attribute.
         """
-        self.address = ipaddress.ip_address(address)
+        self.ip_address = ipaddress.ip_address(ip_address)
         self.port = int(port)
         self.isolated = isolated
         if listed_at is None:
@@ -105,14 +105,16 @@ class GameServer:
             self.max_clients = max_clients
 
     @classmethod
-    def get_instance_key(cls, ip, port=DEFAULT_GAME_SERVER_PORT, *_args, **_kwargs) -> 'Hashable':
+    def get_instance_key(
+            cls, ip_address, port=DEFAULT_GAME_SERVER_PORT, *_args, **_kwargs
+    ) -> Hashable:
         """Get this instance's key for lookup."""
-        ip = ipaddress.ip_address(ip).compressed
-        return sys.intern(f'{ip}:{port}')
+        ip_address = ipaddress.ip_address(ip_address).compressed
+        return sys.intern(f'{ip_address}:{port}')
 
     _servers: ClassVar[dict[Hashable, GameServer]] = {}
 
-    def __new__(cls, *args, isolated: bool = False, **kwargs) -> 'GameServer':
+    def __new__(cls, *args, isolated: bool = False, **kwargs) -> GameServer:
         key = cls.get_instance_key(*args, **kwargs)
         if not isolated and key in cls._servers:
             return cls._servers[key]
@@ -122,7 +124,7 @@ class GameServer:
         return inst
 
     _ASCIILIST_REPR_PATTERN: re.Pattern = re.compile(
-        r'(?P<ip>[\dabcdef:.]+):(?P<port>\d+)\s'
+        r'(?P<ip_address>[\dabcdef:.]+):(?P<port>\d+)\s'
         r'(?P<remote>local|mirror)\s'
         r'(?P<private>public|private)\s'
         r'(?P<mode>\w+)\s'
@@ -133,45 +135,62 @@ class GameServer:
     )
 
     _IPV4_BINARYLIST_REPR_PATTERN: cs.Construct = cs.Struct(
-        ip=cs.ByteSwapped(cs.Bytes(4)),
+        ip_address=cs.ByteSwapped(cs.Bytes(4)),
         port=cs.Int16ul,
         name=cs.ExprValidator(cs.GreedyBytes, lambda obj, ctx: obj.isascii()),
-    )
+    ).compile()
 
     _IPV6_BINARYLIST_REPR_PATTERN: cs.Construct = cs.Struct(
-        ip=cs.ByteSwapped(cs.Bytes(16)),
+        ip_address=cs.ByteSwapped(cs.Bytes(16)),
         port=cs.Int16ul,
         name=cs.ExprValidator(cs.GreedyBytes, lambda obj, ctx: obj.isascii()),
-    )
+    ).compile()
 
-    _BINARYLIST_REPR_PATTERN: cs.Construct = cs.Select(
-        cs.Prefixed(cs.Byte, _IPV4_BINARYLIST_REPR_PATTERN, includelength=True),
-        cs.Prefixed(cs.Byte, _IPV6_BINARYLIST_REPR_PATTERN, includelength=True),
-    )
+    _BINARYLIST_REPR_PATTERN: cs.Construct = cs.GreedyRange(
+        cs.Select(
+            cs.Prefixed(cs.Byte, _IPV4_BINARYLIST_REPR_PATTERN, includelength=True),
+            cs.Prefixed(cs.Byte, _IPV6_BINARYLIST_REPR_PATTERN, includelength=True),
+        )
+    ).compile()
+
+    def dict(self):
+        return {
+            'name': self.name,
+            'remote': self.remote,
+            'private': self.private,
+            'mode': self.mode,
+            'version': self.version,
+            'listed_at': self.listed_at,
+            'clients': self.clients,
+            'max_clients': self.max_clients,
+            'listserver': self.listserver,
+            'plus_version': self.plus_version,
+            'isolated': self.isolated,
+        }
 
     @property
     def binarylist_repr(self) -> bytes:
-        return self._BINARYLIST_REPR_PATTERN.build(dict(
-            ip=self.address.packed,
+        return self._BINARYLIST_REPR_PATTERN.build([dict(
+            ip_address=self.ip_address.packed,
             port=self.port,
             name=self.name.encode()
-        ))
+        )])
 
     @classmethod
-    def from_binarylist_repr(cls, binarylist_repr: bytes, isolated: bool = False):
+    def from_binarylist_reprs(cls, binarylist_repr: bytes, isolated: bool = False):
         data = cls._BINARYLIST_REPR_PATTERN.parse(binarylist_repr)
-        return cls(
-            address=data.host,
-            port=data.port,
-            name=data.name.decode(),
+        return [cls(
+            ip_address=chunk.ip_address,
+            port=chunk.port,
+            name=chunk.name.decode(),
             isolated=isolated
-        )
+        ) for chunk in data]
 
     @property
     def asciilist_repr(self):
         uptime = int((datetime.datetime.utcnow() - self.listed_at).total_seconds())
         return (
-            f'{self.address.compressed}:{self.port} '
+            f'{self.ip_address.compressed}:{self.port} '
             f'{("local", "mirror")[self.remote]} '
             f'{("public", "private")[self.private]} '
             f'{self.mode} '
@@ -203,19 +222,23 @@ class GameServer:
 
     def __repr__(self):
         class_name = type(self).__name__
-        ip, port, name = self.address, self.port, self.name
-        return f'<{class_name} {ip=!r} {port=!s} {name=!r}>'
+        addr, port, name = self.ip_address, self.port, self.name
+        return f'<{class_name} {addr=!r} {port=!s} {name=!r}>'
 
 
 @dataclasses.dataclass
 class MessageOfTheDay:
-    text: str | None
-    expires: datetime.datetime | None
+    text: str | None = None
+    expires: datetime.datetime | None = None
+    updated: datetime.datetime = dataclasses.field(default_factory=datetime.datetime.utcnow)
+
+    def dict(self):
+        return dataclasses.asdict(self)
 
     def __str__(self):
         if self.text and datetime.datetime.utcnow() < self.expires:
             return ''
-        return self.text + '\n'
+        return (self.text or '') + '\n'
 
 
 @dataclasses.dataclass
@@ -226,8 +249,14 @@ class BanlistEntry:
     origin: str
     reserved: str
 
+    def dict(self):
+        return dataclasses.asdict(self)
+
 
 @dataclasses.dataclass
 class Mirror:
     name: str
     address: str
+
+    def dict(self):
+        return dataclasses.asdict(self)

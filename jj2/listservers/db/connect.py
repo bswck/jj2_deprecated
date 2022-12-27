@@ -1,6 +1,7 @@
 import contextlib
 import os
 import traceback
+from typing import ContextManager
 
 from loguru import logger
 from sqlalchemy import create_engine
@@ -23,7 +24,7 @@ current_session = scoped_session(SessionLocal)
 
 
 @contextlib.contextmanager
-def get_session() -> Session:
+def get_session() -> ContextManager[Session]:
     try:
         yield current_session
     except SQLAlchemyError:

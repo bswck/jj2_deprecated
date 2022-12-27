@@ -5,8 +5,11 @@ import functools
 import inspect
 import ipaddress
 import multiprocessing
+import os
 import socket
+import sys
 import threading
+import traceback
 import typing
 import warnings
 import weakref
@@ -14,8 +17,6 @@ import weakref
 from jj2.constants import DEFAULT_COMMUNICATION_ENCODING
 
 if typing.TYPE_CHECKING:
-    from asyncio import StreamReader
-    from asyncio import StreamWriter
     from typing import Any
     from typing import ClassVar
     from typing import Callable  # noqa: F401
@@ -24,32 +25,245 @@ if typing.TYPE_CHECKING:
 _IPAddressT = typing.ForwardRef('ipaddress.IPv4Address | ipaddress.IPv6Address | None')
 
 
-class Connection:
-    """Object that stores all the connection-related data and implements asynchronous behaviour."""
+class BaseEndpointHandler:
     MSG_ENCODING: ClassVar[str] = DEFAULT_COMMUNICATION_ENCODING
     IP_UNKNOWN: ClassVar[str] = '0.0.0.0'
     IP_LOCALHOST: ClassVar[str] = '127.0.0.1'
+    COMMUNICATION_BACKEND_FLAG: ClassVar[str] = '__communicates_as__'
+    VALIDATION_BACKEND_FLAG: ClassVar[str] = '__validates_as__'
+
+    _communication_backends: ClassVar[functools.singledispatch]
+    _validation_backends: ClassVar[functools.singledispatch]
+
+    _host: _IPAddressT
+    _domain: str | None = None
+    _port: int | None = None
+
+    _local_host: _IPAddressT
+    _local_domain: str | None = None
+    _local_port: int | None = None
 
     def __init__(
-        self, 
-        architecture: Architecture,
-        reader: StreamReader, 
-        writer: StreamWriter
+        self,
+        future: asyncio.Future,
+        endpoint: Endpoint,
+        *__args,
+        **__kwargs
     ):
-        self.architecture = architecture
-        self.reader = reader
-        self.writer = writer
+        self.future = future
+        self.endpoint = endpoint
 
-        self._host: _IPAddressT = ipaddress.ip_address(self.IP_UNKNOWN)
-        self._domain: str | None = None
-        self._local_host: _IPAddressT = ipaddress.ip_address(self.IP_UNKNOWN)
-        self._local_port: int | None = None
-        self._get_addr_and_fqdn()
-
+        self._host = ipaddress.ip_address(self.IP_UNKNOWN)
+        self._local_host = ipaddress.ip_address(self.IP_UNKNOWN)
         self._is_alive = True
 
-    def _get_addr_and_fqdn(self):
-        sock: socket.socket = self.writer.get_extra_info('socket')
+    def __post_init__(self, **kwargs):
+        pass
+
+    @property
+    def is_localhost(self) -> bool:
+        return self._host.is_loopback
+
+    @property
+    def is_alive(self) -> bool:
+        """Examine whether the connection is alive."""
+        return self._is_alive
+
+    @property
+    def address(self) -> tuple[str, int]:
+        """The address of the remote endpoint in a (domain, port) format."""
+        return self._domain, self._port
+
+    @property
+    def str_address(self) -> str:
+        """The address of the remote endpoint in a 'domain:port' format."""
+        return f'{self._domain}:{self._port}'
+
+    @property
+    def domain(self) -> str:
+        """
+        The domain of the remote endpoint.
+        For instace if the remote endpoint host is '149.210.206.11', the domain is 'pukenukem.com'.
+        """
+        return self._domain
+
+    @property
+    def host(self) -> _IPAddressT:
+        """The IP address of the remote endpoint."""
+        return self._host
+
+    @property
+    def port(self) -> int:
+        """The port of the remote endpoint."""
+        return self._port
+
+    @property
+    def local_address(self) -> str:
+        """The address of the local endpoint in a 'local domain:local port' format."""
+        return f'{self._local_domain}:{self._local_port}'
+
+    @property
+    def local_domain(self) -> str:
+        """The domain of the local endpoint."""
+        return self._local_domain
+
+    @property
+    def local_host(self) -> _IPAddressT:
+        """The IP address of the local endpoint."""
+        return self._local_host
+
+    @property
+    def local_port(self) -> int:
+        """The port of the local endpoint."""
+        return self._local_port
+
+    def stop(self):
+        """Immediately stop the connection communication."""
+        self._is_alive = False
+
+    def sync(self, pool: HandlerPool, data: str | bytes, exclude_self: bool = True):
+        """
+        Synchronize :param:`data` in the entire :param:`pool`.
+        Exclude this connection by default.
+
+        Parameters
+        ----------
+        pool : HandlerPool
+            Connection pool instance of connections to synchronize the data through.
+        data :
+
+        exclude_self
+        """
+        if exclude_self:
+            pool.sync(data, self)
+        else:
+            pool.sync(data)
+
+    # noinspection PyUnusedLocal
+    def on_sync(self, pool: HandlerPool, data: str | bytes):
+        """
+        Receive synchronization request from :param:`pool`
+        to send :param:`data` through this connection.
+        """
+        raise NotImplementedError
+
+    async def validate(self, pool: HandlerPool | None = None):
+        """
+        This method is called before the main connection loop starts.
+        It is intended to call kill(), if the connection cannot be validated.
+
+        Parameters
+        ----------
+        pool : HandlerPool or None
+            Connection pool instance that requested validation.
+        """
+        callback = self._validation_backends(self.endpoint)
+        if callback is NotImplemented:
+            validate = self.validate_default
+        else:
+            validate = functools.partial(callback, self)
+        return await validate(pool)
+
+    async def validate_default(self, pool: HandlerPool | None = None):
+        """
+        This method is called before the main connection loop starts.
+        It is intended to call kill(), if the connection cannot be validated.
+
+        Parameters
+        ----------
+        pool : HandlerPool or None
+            Connection pool instance that requested validation.
+        """
+        pass
+
+    async def communicate(self, pool: HandlerPool | None = None):
+        """
+        A single frame in the connection life.
+        This method is intended to interact with the connection I/O through write() or/and read().
+        It's called continuously by an external loop, and it can be stopped by kill().
+
+        Parameters
+        ----------
+        pool : HandlerPool or None
+            Connection pool instance that requested validation.
+        """
+        callback = self._communication_backends(self.endpoint)
+        if callback is NotImplemented:
+            communicate = self.communicate_default
+        else:
+            communicate = functools.partial(callback, self)
+        return await (communicate(pool) if pool else communicate())
+
+    async def communicate_default(self, pool: HandlerPool | None = None):
+        """
+        A single frame in the connection life.
+        This method is intended to interact with the connection I/O through write() or/and read().
+        It's called continuously by an external loop, and it can be stopped by kill().
+
+        Parameters
+        ----------
+        pool : HandlerPool or None
+            Connection pool instance that requested validation.
+        """
+        pass
+
+    @classmethod
+    def communication_backend(cls, endpoint_class: type[Endpoint], method=None):
+        """
+        Register communicate() implementation for given endpoint class (type).
+
+        Parameters
+        ----------
+        endpoint_class
+        method
+        """
+        if method is None:
+            return functools.partial(cls.communication_backend, endpoint_class)
+        cls._communication_backends.register(endpoint_class, lambda _: method)
+        return method
+
+    @classmethod
+    def validation_backend(cls, endpoint_class: type[Endpoint], method=None):
+        """
+        Register validate() implementation for given endpoint class (type).
+
+        Parameters
+        ----------
+        endpoint_class
+        method
+        """
+        if method is None:
+            return functools.partial(cls.validation_backend, endpoint_class)
+        cls._validation_backends.register(endpoint_class, lambda _: method)
+        return method
+
+    def __init_subclass__(cls):
+        default_dispatch = (lambda _: NotImplemented)
+        cls._communication_backends = staticmethod(functools.singledispatch(default_dispatch))
+        cls._validation_backends = staticmethod(functools.singledispatch(default_dispatch))
+        for _, method in inspect.getmembers(cls):
+            communicates_as_endpoint_class = getattr(method, cls.COMMUNICATION_BACKEND_FLAG, None)
+            if communicates_as_endpoint_class:
+                cls.communication_backend(communicates_as_endpoint_class, method)
+            validates_as_endpoint_class = getattr(method, cls.VALIDATION_BACKEND_FLAG, None)
+            if validates_as_endpoint_class:
+                cls.validation_backend(validates_as_endpoint_class, method)
+
+
+class EndpointHandler(BaseEndpointHandler):
+    """TCP"""
+
+    def __init__(
+        self,
+        future: asyncio.Future,
+        endpoint: Endpoint,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ):
+        super().__init__(future, endpoint)
+        self.reader = reader
+        self.writer = writer
+        sock = self.writer.get_extra_info('socket')
 
         rhost, rport = sock.getpeername()[:2]
         self._host = ipaddress.ip_address(rhost)
@@ -61,61 +275,8 @@ class Connection:
         self._local_port = rport
         self._local_domain = socket.getfqdn(self._local_host.compressed)
 
-    @property
-    def is_localhost(self) -> 'bool':
-        return self._host.is_loopback
-
-    @property
-    def is_alive(self) -> 'bool':
-        """Examine whether the connection is alive."""
-        return self._is_alive
-
-    @property
-    def address(self) -> 'str':
-        """The address of the remote endpoint in a 'domain:port' format."""
-        return f'{self._domain}:{self._port}'
-
-    @property
-    def domain(self) -> 'str':
-        """
-        The domain of the remote endpoint.
-        For instace if the remote endpoint host is '149.210.206.11', the domain is 'pukenukem.com'.
-        """
-        return self._domain
-
-    @property
-    def host(self) -> '_IPAddressT':
-        """The IP address of the remote endpoint."""
-        return self._host
-
-    @property
-    def port(self) -> 'int':
-        """The port of the remote endpoint."""
-        return self._port
-
-    @property
-    def local_address(self) -> 'str':
-        """The address of the local endpoint in a 'local domain:local port' format."""
-        return f'{self._local_domain}:{self._local_port}'
-
-    @property
-    def local_domain(self) -> 'str':
-        """The domain of the local endpoint."""
-        return self._local_domain
-
-    @property
-    def local_host(self) -> '_IPAddressT':
-        """The IP address of the local endpoint."""
-        return self._local_host
-
-    @property
-    def local_port(self) -> int:
-        """The port of the local endpoint."""
-        return self._local_port
-
-    def kill(self):
-        """Immediately stop the connection communication."""
-        self._is_alive = False
+    def on_sync(self, pool: HandlerPool, data: str | bytes):
+        self.write(data)
 
     @functools.singledispatchmethod
     def write(self, data: str | bytes):
@@ -131,97 +292,180 @@ class Connection:
     def message(self, data: str):
         self.send(data.encode(self.MSG_ENCODING))
 
-    def read(self, n: int = -1):
-        self.reader.read(n)
+    def read(self, n=-1):
+        return self.handle_read(self.reader.read(n))
 
-    def sync(self, pool: ConnectionPool, data: str | bytes, exclude_self: bool = True):
-        """
-        Synchronize :param:`data` in the entire :param:`pool`.
-        Exclude this connection by default.
-
-        Parameters
-        ----------
-        pool : ConnectionPool
-            Connection pool instance of connections to synchronize the data through.
-        data :
-
-        exclude_self
-        """
-        if exclude_self:
-            pool.sync(data, self)
+    def read_exactly(self, n):
+        try:
+            data = self.reader.readexactly(n)
+        except asyncio.IncompleteReadError as exc:
+            data = exc.partial
+            missing = exc.expected - len(data)
         else:
-            pool.sync(data)
+            missing = 0
+        self.handle_read(data, missing > 0)
+        return data, missing
 
-    def on_sync(self, pool: ConnectionPool, data: str | bytes):
-        """
-        Receive synchronization request from :param:`pool`
-        to send :param:`data` through this connection.
-        """
-        self.write(data)
+    def read_until(self, sep):
+        return self.handle_read(self.reader.readuntil(sep))
 
-    async def validate(self, pool: ConnectionPool | None = None):
-        """
-        This method is called before the main connection loop starts.
-        It is intended to call kill(), if the connection cannot be validated.
-
-        Parameters
-        ----------
-        pool : ConnectionPool or None
-            Connection pool instance that requested validation.
-        """
-
-    async def communicate(self, pool: ConnectionPool | None = None):
-        """
-        A single cycle in the connection life.
-        This method is intended to interact with the connection I/O through write() or receive().
-        It's called continuously by an external loop, and it can be stopped by kill().
-
-        Parameters
-        ----------
-        pool : ConnectionPool or None
-            Connection pool instance that requested validation.
-        """
+    def handle_read(self, data, incomplete=False):
+        if not incomplete and not data:
+            self.stop()  # EOF
+        return data
 
     def __init_subclass__(cls):
-        write_meth = typing.cast(functools.singledispatchmethod, cls.write)
-        if cls.write is Connection.write:
-            write_meth = functools.singledispatchmethod(write_meth.func)
-        for func in write_meth.dispatcher.registry.values():
-            write_meth.register(getattr(cls, func.__name__))
+        super().__init_subclass__()
+        if isinstance(cls.write, functools.singledispatchmethod):
+            write_meth = typing.cast(functools.singledispatchmethod, cls.write)
+            if cls.write is EndpointHandler.write:
+                write_meth = functools.singledispatchmethod(write_meth.func)
+            for func in write_meth.dispatcher.registry.values():
+                write_meth.register(getattr(cls, func.__name__))
 
 
-class ConnectionPool:
+class DatagramProtocol(asyncio.DatagramProtocol):
+    handler: type[DatagramEndpointHandler] | None = None
+
+    def set_handler(self, handler):
+        self.handler = handler
+
+    def datagram_received(self, datagram, addr) -> None:
+        if not self.handler:
+            return
+        self.handler.on_datagram(bytearray(datagram))
+
+    def error_received(self, exc) -> None:
+        if not self.handler:
+            return
+
+    def connection_made(self, transport) -> None:
+        if not self.handler:
+            return
+        self.handler.transport = transport
+
+    def connection_lost(self, exc) -> None:
+        if not self.handler:
+            return
+        self.handler.connection_lost(exc)
+
+
+class DatagramEndpointHandler(BaseEndpointHandler):
+    """UDP"""
+    def __init__(
+        self,
+        future: asyncio.Future,
+        endpoint: Endpoint,
+        transport: asyncio.DatagramTransport,
+        protocol: DatagramProtocol
+    ):
+        # https://github.com/python/cpython/issues/91227
+        if os.name == 'nt':
+            loop = asyncio.SelectorEventLoop()
+            asyncio.set_event_loop(loop)
+        super().__init__(future, endpoint)
+        self.transport = transport
+        self.protocol = protocol
+        self.protocol.set_handler(self)
+        self.queue = asyncio.Queue()
+
+    def connection_lost(self, exc):
+        if exc:
+            self.future.set_exception(exc)
+        else:
+            self.future.set_result(None)
+        self.transport = None
+
+    def on_sync(self, pool, data):
+        if self.transport:
+            self.transport.sendto(data, self.address)
+
+    def on_datagram(self, datagram: bytearray, addr: tuple[str, int]):
+        original = datagram.copy()
+        if self.endpoint.validate_data(datagram, addr):
+            try:
+                self.queue.put_nowait((bytes(datagram), addr))
+            except asyncio.QueueFull:
+                # Potential DoS/DDoS attack
+                self.on_queue_overflow(addr)
+        else:
+            self.on_invalid_datagram(original, addr)
+
+    def on_queue_overflow(self, addr: tuple[str, int]):
+        self.stop()
+
+    def on_invalid_datagram(self, datagram, addr: tuple[str, int]):
+        pass
+
+    async def handle_datagram(self, datagram: bytes, addr: tuple[str, int]):
+        pass
+
+    async def queue_looping(self, handle=None):
+        if handle is None:
+            handle = self.handle_datagram
+        while not (
+            self.future.done()
+            or self.future.cancelled()
+        ):
+            self.endpoint.pool.task(handle(*await self.queue.get()))
+
+    def sendto(self, datagram, addr=None):
+        self.transport.sendto(datagram, addr)
+
+
+def communication_backend(endpoint_class: type[Endpoint], method=None):
+    if method is None:
+        return functools.partial(communication_backend, endpoint_class)
+    setattr(method, BaseEndpointHandler.COMMUNICATION_BACKEND_FLAG, endpoint_class)
+    return method
+
+
+def validation_backend(endpoint_class: type[Endpoint], method=None):
+    if method is None:
+        return functools.partial(validation_backend, endpoint_class)
+    setattr(method, BaseEndpointHandler.VALIDATION_BACKEND_FLAG, endpoint_class)
+    return method
+
+
+class HandlerPool:
     """
-    NOTE: Do not mistake with database<->application connection pools.
-    Connection pool that stores all the connections and also may keep them alive.
+    Handler pool that stores all the handlers and also may keep them alive.
     Use it to impose custom behavior on all of them across many various servers,
     e.g. for setting timeout on each, but also for storing connections
-    of various endpoint architectures (server connections, client connections etc.).
+    of various endpoint endpoint_classs (server connections, client connections etc.).
     """
 
     def __init__(self, future: asyncio.Future | None = None):
+        self.future = future
+        self._future_bound = False
+        self.tasks = []
+        self.setup_incomplete = False
+        self.handlers = weakref.WeakSet()
+
+    def bind_future(self, future=None):
         if future is None:
+            if self._future_bound:
+                return
             loop = asyncio.get_event_loop()
             future = loop.create_future()
         self.future = future
         self.future.add_done_callback(self.on_future_done)
-        self.tasks = []
-        self.connections = weakref.WeakSet()
+        self._future_bound = True
 
-    def sync(self, data: str | bytes, *exclude_conns: Connection):
-        connections = self.connections[:]
-        if exclude_conns:
-            for excluded_conn in exclude_conns:
-                connections.discard(excluded_conn)
-        for connection in connections:
-            connection.on_sync(self, data)
+    def sync(self, data: str | bytes, *exclude_handlers: EndpointHandler):
+        handlers = self.handlers[:]
+        if exclude_handlers:
+            for excluded_handler in exclude_handlers:
+                handlers.discard(excluded_handler)
+        for handler in handlers:
+            handler.on_sync(self, data)
 
     def cancel(self):
         """Cancel pending and current connection-related tasks."""
         self.cancel_pending_tasks()
         self.cancel_current_tasks()
 
-    def on_future_done(self):
+    def on_future_done(self, _result):
         """Pool future done callback."""
         self.cancel_current_tasks()
 
@@ -232,17 +476,37 @@ class ConnectionPool:
         for task in self.tasks:
             task.cancel()
 
-    async def run(self, connection):
-        if not connection.is_alive:
+    def end(self):
+        self.future.set_result(None)
+
+    async def run(self, handler):
+        self.bind_future()
+
+        if not handler.is_alive:
             return
 
-        self.connections.add(connection)
+        self.handlers.add(handler)
+        communicate = (
+            handler.communicate if handler.endpoint.pool is self
+            else functools.partial(handler.communicate, self)
+        )
 
-        while not (self.future.done() or self.future.cancelled()):
-            await connection.communicate(self)
-            if not connection.is_alive:
-                self.connections.remove(connection)
-                return
+        while not (
+            (self.future.done() or self.future.cancelled())
+            or (handler.future.done() or handler.future.cancelled())
+        ):
+            try:
+                await communicate()
+            except Exception:
+                traceback.print_exc()
+                handler.stop()
+                raise
+            finally:
+                if not handler.is_alive:
+                    self.handlers.remove(handler)
+                    if not self.handlers:
+                        self.end()
+                    break
 
     def task(self, task: typing.Coroutine):
         loop = asyncio.get_running_loop()
@@ -250,25 +514,25 @@ class ConnectionPool:
             task = loop.create_task(task)
         self.tasks.append(task)
 
-    async def on_connection(
-        self, 
-        endpoint: Architecture,
-        reader: StreamReader, 
-        writer: StreamWriter
+    async def on_endpoint(
+        self,
+        endpoint: Endpoint,
+        *args, **kwargs
     ):
-        connection = endpoint.create_connection(reader, writer)
-        await connection.validate()
-        await self.run(connection)
+        loop = asyncio.get_running_loop()
+        handler = endpoint.create_handler(loop.create_future(), *args, **kwargs)
+        await handler.validate()
+        await self.run(handler)
 
-    def connection_callback(self, endpoint):
-        return lambda reader, writer: self.task(
-            self.on_connection(endpoint, reader, writer)
-        )
+    def connection_callback(self, endpoint, *args):
+        if not args:
+            return functools.partial(self.connection_callback, endpoint)
+        return self.task(self.on_endpoint(endpoint, *args))
 
 
-class Architecture:
+class Endpoint:
     """
-    A class that describes connection architecture (client-server, P2P) and stores related
+    A class that describes connection endpoint (client/server, peer) and stores related
     connections. It works with ConnectionPool, which manages to keep those connections alive
     by calling proper connection's methods in asynchronous loop.
 
@@ -278,46 +542,48 @@ class Architecture:
 
     default_host: str | None = None
     default_port: int | None = None
-    connection_class: type[Connection] = Connection
-    pool_class: type[ConnectionPool] = ConnectionPool
+    handler_class: type[BaseEndpointHandler] = EndpointHandler
+    pool_class: type[HandlerPool] = HandlerPool
+    error_report_mutex: asyncio.Lock = asyncio.Lock()
 
     def __init__(
         self,
-        pool: ConnectionPool | None = None,
-        connection_class: type[Connection] | None = None,
+        pool: HandlerPool | None = None,
+        wrapper_class: type[EndpointHandler] | None = None,
+        handler_kwargs: dict | None = None,
         **endpoint_kwargs: Any
     ):
         if pool is None:
             pool = self.pool_class()
         self.pool = pool
 
-        self.connections: list[connection_class] = []
+        self.handlers: list[wrapper_class] = []
         self.endpoint_kwargs = endpoint_kwargs
+        self.handler_kwargs = handler_kwargs or {}
 
         self._endpoints: list = []
         self._loop: asyncio.AbstractEventLoop | None = None
         self._future: asyncio.Future | None = None
 
-        if connection_class:
-            self.connection_class = connection_class
+        if wrapper_class:
+            self.handler_class = wrapper_class
 
     @property
-    def is_ssl(self) -> 'bool':
+    def is_ssl(self) -> bool:
         return self.endpoint_kwargs.get('ssl_context') is not None
 
-    def create_connection(
-        self, 
-        reader: StreamReader, 
-        writer: StreamWriter
-    ) -> 'Connection':
-        connection = self.connection_class(self, reader, writer)
-        self.connections.append(connection)
-        return connection
+    def create_handler(self, future: asyncio.Future, *args, **kwargs) -> handler_class:
+        handler = self.handler_class(future, self, *args, **kwargs)
+        handler.__post_init__(**self.handler_kwargs)
+        self.handlers.append(handler)
+        return handler
 
     def start(
         self,
-        scheduler: Callable[[Architecture], ...] | None = None,
-        blocking: bool = True
+        setup: Callable[[Endpoint], ...] | None = None,
+        blocking: bool = True,
+        setup_timeout=None,
+        timeout=None
     ):
         try:
             loop = asyncio.get_running_loop()
@@ -325,26 +591,31 @@ class Architecture:
             loop = asyncio.get_event_loop()
         self._loop = loop
 
-        self._future = loop.create_future()
-
-        if callable(scheduler):
-            mby_coro = scheduler(self)
-            if inspect.isawaitable(mby_coro):
-                loop.create_task(mby_coro)
-
+        task = None
+        if callable(setup):
+            setup_ret = setup(self)
+            if inspect.isawaitable(setup_ret):
+                if isinstance(setup_ret, asyncio.Future):
+                    task = setup_ret
+                else:
+                    task = loop.create_task(setup_ret)
+        if task:
+            loop.run_until_complete(asyncio.wait_for(task, timeout=setup_timeout))
         if blocking:
-            loop.run_until_complete(self._future)
+            futs = [handler.future for handler in self.handlers]
+            if futs:
+                loop.run_until_complete(asyncio.wait(futs, timeout=timeout))
 
     def start_concurrent(
         self,
         cls: type,
-        scheduler: Callable[[Architecture], ...] | None = None,
+        setup: Callable[[Endpoint], ...] | None = None,
         blocking: bool = True,
         timeout: int | None = None
     ):
         concurrent = cls(
             target=self.start,
-            kwargs=dict(scheduler=scheduler, blocking=True)
+            kwargs=dict(setup=setup, blocking=True)
         )
         concurrent.start()
         if blocking:
@@ -353,38 +624,49 @@ class Architecture:
 
     def start_thread(
         self,
-        scheduler: Callable[[Architecture], ...] | None = None,
+        setup: Callable[[Endpoint], ...] | None = None,
         blocking: bool = True,
         timeout: int | None = None
     ):
         """Start an endpoint in a separate thread."""
-        return self.start_concurrent(threading.Thread, scheduler, blocking, timeout)
+        return self.start_concurrent(
+            threading.Thread, setup,
+            blocking=blocking,
+            timeout=timeout
+        )
 
     def start_process(
         self,
-        scheduler: Callable[[Architecture], ...] | None = None,
+        setup: Callable[[Endpoint], ...] | None = None,
         blocking: bool = True,
         timeout: int | None = None
     ):
         """Start an endpoint in a separate process."""
-        return self.start_concurrent(multiprocessing.Process, scheduler, blocking, timeout)
+        return self.start_concurrent(
+            multiprocessing.Process, setup,
+            blocking=blocking,
+            timeout=timeout
+        )
 
     def stop(self):
-        """Stop all connections bound to this endpoint architecture."""
+        """Stop all connections bound to this endpoint."""
+        connections = self.handlers
+        if connections:
+            for connection in connections:
+                connection.stop()
+            connections.clear()
 
-        if self.connections:
-            self._future.cancel()
-            self.pool.cancel()
-            self.connections.clear()
+    def validate_data(self, data: bytearray, addr: tuple[str, int] | None):
+        return True
 
-    def create_endpoint(
+    async def begin(
         self,
         host: str | None = None,
         port: int | None = None,
         **endpoint_kwargs: Any
     ):
         """
-        Create and return the asynchronous endpoint. Could be a server, client, peer etc.
+        Create and return connected asynchronous endpoint(s). Could be a server, client, peer etc.
 
         Parameters
         ----------
@@ -404,32 +686,103 @@ class Architecture:
             port = self.default_port
         if port is None:
             raise ValueError(f'{host}: port was not provided')
+        return await self.begin_endpoint(host, port, **endpoint_kwargs)
 
-        return self.endpoint_factory(host, port, **endpoint_kwargs)
-
-    def endpoint_factory(
+    async def begin_endpoint(
         self,
         host: str,
         port: int,
         **endpoint_kwargs: Any
-    ) -> 'tuple[StreamReader, StreamWriter]':
-        """Create and return the asynchronous endpoint. Could be a server, client etc."""
+    ):
+        """Create and return the asynchronous endpoint protocol. Could be a server, client etc."""
         raise NotImplementedError
 
+    @classmethod
+    def handler(cls, handler_class: type[EndpointHandler]):
+        cls.handler_class = handler_class
+        return handler_class
 
-class Server(Architecture):
-    _endpoints: list[asyncio.AbstractServer]
+    @classmethod
+    def set_pool_class(cls, pool_class: type[HandlerPool]):
+        cls.pool_class = pool_class
+        return pool_class
 
-    def endpoint_factory(self, host, port, **endpoint_kwargs):
+    async def on_error(self):
+        async with self.error_report_mutex:
+            print(f'Exception in {type(self).__name__}:', file=sys.stderr)
+            traceback.print_exc()
+
+
+class Server(Endpoint):
+    async def begin_endpoint(self, host, port, **endpoint_kwargs):
         endpoint_kwargs.update(host=host, port=port)
-        return asyncio.start_server(self.pool.connection_callback(self), **endpoint_kwargs)
+        return await asyncio.start_server(self.pool.connection_callback(self), **endpoint_kwargs)
+
+    async def start_server(
+            self,
+            host: str | None = None,
+            port: int | None = None,
+            **endpoint_kwargs: Any
+    ):
+        """Start a server."""
+        return await self.begin(host, port, **endpoint_kwargs)
 
 
-class Client(Architecture):
-    _endpoints: list[tuple[StreamReader, StreamWriter]]
-
-    def endpoint_factory(self, host, port, **endpoint_kwargs):
+class TCPClient(Endpoint):
+    async def begin_endpoint(self, host, port, **endpoint_kwargs):
         endpoint_kwargs.update(host=host, port=port)
-        reader, writer = asyncio.open_connection(**endpoint_kwargs)
-        self.create_connection(reader, writer)
+        try:
+            reader, writer = await asyncio.open_connection(**endpoint_kwargs)
+        except Exception:
+            await self.on_error()
+            return
+        self.pool.connection_callback(self, reader, writer)
         return reader, writer
+
+    async def connect(
+            self,
+            host: str | None = None,
+            port: int | None = None,
+            **endpoint_kwargs: Any
+    ):
+        """Connect to a server."""
+        return await self.begin(host, port, **endpoint_kwargs)
+
+
+class UDPClient(Endpoint):
+    protocol_class = DatagramProtocol
+
+    async def begin_endpoint(self, host, port, **endpoint_kwargs):
+        endpoint_kwargs.update(
+            host=host, port=port,
+            protocol_factory=self.protocol_class
+        )
+        loop = asyncio.get_running_loop()
+        try:
+            transport, protocol = await loop.create_datagram_endpoint(**endpoint_kwargs)
+        except Exception:
+            await self.on_error()
+            return
+        self.pool.connection_callback(self, transport, protocol)
+        return transport
+
+
+# Recipes
+def start_with_timeouts(client, setup, setup_timeout=None, timeout=None):
+    try:
+        client.start(setup, setup_timeout=setup_timeout, timeout=timeout)
+    except asyncio.TimeoutError:
+        pass
+    finally:
+        client.stop()
+
+
+def gather_connect(client, *addresses, setup_timeout=None, timeout=None):
+    if not addresses:
+        addresses = [[None]]
+    start_with_timeouts(
+        client,
+        lambda _: asyncio.gather(*(client.connect(*address) for address in addresses)),
+        setup_timeout=setup_timeout, timeout=timeout
+    )
+    return client

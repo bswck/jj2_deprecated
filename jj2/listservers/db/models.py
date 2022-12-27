@@ -5,7 +5,7 @@ from sqlalchemy import Column
 from sqlalchemy import Integer
 from sqlalchemy import Text
 
-from jj2.listservers.db.api import Base
+from jj2.listservers.db.connect import Base
 
 
 class ServerModel(Base):
@@ -36,7 +36,10 @@ class SettingModel(Base):
     value = Column(Text)
 
 
-@event.listens_for(SettingModel, 'after_create')
+MOTD_EXPIRES_DELAY = datetime.timedelta(days=3)
+
+
+@event.listens_for(SettingModel.__table__, 'after_create')
 def setup_motd_fields(_t, connection, **_k):
     stmt = (
        f'INSERT INTO {SettingModel.__tablename__} '
@@ -46,7 +49,7 @@ def setup_motd_fields(_t, connection, **_k):
         'motd', '',
         'motd-updated', '0',
         'motd-expires',
-        (datetime.datetime.utcnow() + datetime.timedelta(seconds=3 * 86400)).timestamp()
+        (datetime.datetime.utcnow() + MOTD_EXPIRES_DELAY).timestamp()
     )
     connection.execute(stmt, values)
 

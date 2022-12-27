@@ -4,7 +4,8 @@ from jj2.listservers.entities import BanlistEntry
 from jj2.listservers.entities import GameServer
 from jj2.listservers.entities import MessageOfTheDay
 from jj2.listservers.entities import Mirror
-from jj2.listservers.db.api import get_session
+from jj2.listservers.db.connect import get_session
+from jj2.listservers.db.models import MOTD_EXPIRES_DELAY
 from jj2.listservers.db.models import BanlistEntryModel
 from jj2.listservers.db.models import MirrorModel
 from jj2.listservers.db.models import ServerModel
@@ -30,6 +31,7 @@ __all__ = (
     'delete_banlist_entry',
 
     'read_motd',
+    'update_motd',
 )
 
 
@@ -40,6 +42,7 @@ def read_servers(
     mirror: bool = False,
     bind_listserver: str | None = None,
     server_cls: type[GameServer] | None = GameServer,
+    isolated: bool = False,
 ):
     with get_session() as session:
         query = session.query(ServerModel)
@@ -59,7 +62,8 @@ def read_servers(
         server_from_model(
             server_model,
             server_cls=server_cls,
-            bind_listserver=bind_listserver
+            bind_listserver=bind_listserver,
+            isolated=isolated
         )
         if server_cls else server_model
         for server_model in server_models
@@ -80,12 +84,13 @@ def update_server(server_id: str, **traits):
 def server_from_model(
     server_model: ServerModel,
     server_cls: type[GameServer] | None = GameServer,
-    bind_listserver: str | None = None
+    bind_listserver: str | None = None,
+    isolated: bool = False
 ):
     server = None
     if server_model:
         server = server_cls(
-            address=server_model.ip,
+            ip_address=server_model.ip,
             port=server_model.port,
             remote=bool(server_model.remote),
             private=bool(server_model.private),
@@ -95,6 +100,7 @@ def server_from_model(
             clients=server_model.players,
             max_clients=server_model.max,
             name=server_model.name,
+            isolated=isolated
         )
         if bind_listserver:
             server.listserver = bind_listserver
@@ -241,14 +247,37 @@ def delete_banlist_entry(entry_model: BanlistEntryModel | None = None, **model_a
 
 def read_motd(motd_cls: type[MessageOfTheDay] | None = MessageOfTheDay):
     expires_model = None
+    updated_model = None
+    text = None
     with get_session() as session:
-        model = session.get(SettingModel, "motd")
+        model = session.get(SettingModel, 'motd')
         if model:
             text = model.value
-            expires_model = session.get(SettingModel, "motd-expires")
+            expires_model = session.get(SettingModel, 'motd-expires')
+            updated_model = session.get(SettingModel, 'motd-updated')
     expires = None
+    updated = None
     if expires_model:
-        expires = expires_model.value
+        expires = datetime.datetime.utcfromtimestamp(expires_model.value)
+    if updated_model:
+        expires = datetime.datetime.utcfromtimestamp(updated_model.value)
     if motd_cls:
-        return MessageOfTheDay(text, expires)
+        return motd_cls(text, expires, updated) if updated else motd_cls(text, expires)
     return model, expires_model
+
+
+def update_motd(motd: str | MessageOfTheDay, now=datetime.datetime.utcnow):
+    updated_at = now()
+    if isinstance(motd, MessageOfTheDay):
+        expires = motd.expires
+        motd = motd.text
+    else:
+        expires = updated_at + MOTD_EXPIRES_DELAY
+    with get_session() as session:
+        for model_name, value in (
+            ('motd', motd), ('motd-expires', expires.timestamp()),
+            ('motd-updated', updated_at.timestamp())
+        ):
+            model = session.get(SettingModel, model_name) or SettingModel(item='motd', value=None)
+            model.update(value)
+        session.commit()
