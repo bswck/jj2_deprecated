@@ -7,7 +7,7 @@ from jj2 import endpoints
 class GameDataClient(endpoints.UDPClient):
     MAGIC = b'00'
 
-    def datagram_checksum(self, datagram: bytearray):
+    def datagram_checksum(self, datagram):
         """Compute checksum of a game packet datagram."""
 
         buffer = self.MAGIC + datagram
@@ -17,7 +17,7 @@ class GameDataClient(endpoints.UDPClient):
             most += least
         return cs.Byte.build(least % 251) + cs.Byte.build(most % 251)
 
-    def validate_data(self, datagram, addr):
+    def validate_data(self, datagram, addr=None):
         checksum = bytes((datagram.pop(0), datagram.pop(0)))
         return checksum == self.datagram_checksum(datagram)
 
