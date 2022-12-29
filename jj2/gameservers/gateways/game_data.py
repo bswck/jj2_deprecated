@@ -24,5 +24,4 @@ class GameDataClient(endpoints.UDPClient):
 
 @GameDataClient.handler
 class GameDataHandler(endpoints.DatagramEndpointHandler):
-    async def communicate(self, pool=None):
-        await self.data_loop()
+    pass

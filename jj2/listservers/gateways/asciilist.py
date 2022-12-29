@@ -42,7 +42,7 @@ class ASCIIListConnection(endpoints.ConnectionHandler):
             bind_listserver=self.local_address,
             isolated=self.memory_isolated
         )
-        self.message("".join(server.asciilist_repr for server in servers))
+        await self.message("".join(server.asciilist_repr for server in servers))
         self.stop()
 
     @endpoints.communication_backend(ASCIIListClient)

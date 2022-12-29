@@ -27,7 +27,7 @@ class MOTDConnection(endpoints.ConnectionHandler):
     async def send_motd(self):
         logger.info(f'Sending MOTD to {self.host}')
         motd = db.read_motd()
-        self.message(str(motd))
+        await self.message(str(motd))
         self.stop()
 
     @endpoints.communication_backend(MOTDClient)

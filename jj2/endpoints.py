@@ -209,7 +209,7 @@ class BaseEndpointHandler:
         pool : HandlerPool or None
             Connection pool instance that requested validation.
         """
-        pass
+        await self.data_loop()
 
     @classmethod
     def communication_backend(cls, endpoint_class: type[Endpoint], method=None):
@@ -420,7 +420,8 @@ class DatagramEndpointHandler(BaseEndpointHandler):
     async def write_to(self, datagram: str | bytes, addr: _AddressT | None = None):
         """Send data through the endpoint, bytes or string."""
         warnings.warn(
-            f'unknown write_to() datagram type {type(datagram).__name__}, defaulting to message()'
+            f'unknown write_to() datagram type {type(datagram).__name__}, '
+            'defaulting to message_to()'
         )
         await self.message_to(datagram, addr)
 
@@ -770,13 +771,13 @@ class TCPClient(Endpoint):
 
 
 class UDPEndpoint(Endpoint):
-    _use_local_addr: ClassVar[bool]
+    use_local_addr: ClassVar[bool]
     protocol_class: type[DatagramProtocol] = DatagramProtocol
 
     async def begin_endpoint(self, host, port, **endpoint_kwargs):
         endpoint_kwargs.update(protocol_factory=self.protocol_class)
         addr = (host, port)
-        if self._use_local_addr:
+        if self.use_local_addr:
             endpoint_kwargs.update(local_addr=addr)
         else:
             endpoint_kwargs.update(remote_addr=addr)
@@ -791,11 +792,11 @@ class UDPEndpoint(Endpoint):
 
 
 class UDPClient(UDPEndpoint):
-    _use_local_addr = False
+    use_local_addr = False
 
 
 class UDPServer(UDPEndpoint):
-    _use_local_addr = True
+    use_local_addr = True
     default_host = '127.0.0.1'
 
 

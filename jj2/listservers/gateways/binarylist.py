@@ -50,7 +50,7 @@ class BinaryListConnection(endpoints.ConnectionHandler):
             servers.extend(DUMMY_SERVERS)
         servers.extend(db.read_servers(vanilla=True, bind_listserver=self.local_address))
         payload = self.payload_header + b''.join(server.binarylist_repr for server in servers)
-        self.send(payload)
+        await self.send(payload)
         self.stop()
 
     @endpoints.communication_backend(BinaryListClient)
