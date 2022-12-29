@@ -505,7 +505,6 @@ class HandlerPool:
             except Exception:
                 await handler.endpoint.on_error()
                 handler.stop()
-                raise
             finally:
                 if not handler.is_alive:
                     self.handlers.remove(handler)
