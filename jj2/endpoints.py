@@ -405,12 +405,12 @@ class DatagramEndpointHandler(BaseEndpointHandler):
     async def handle_datagram(self, datagram: bytes, addr: _AddressT):
         """Called when a new valid datagram has just been dequeued."""
 
-    async def queue_looping(self, handle=None):
-        if handle is None:
-            handle = self.handle_datagram
+    async def queue_looping(self, datagram_handler=None):
+        if datagram_handler is None:
+            datagram_handler = self.handle_datagram
         loop = asyncio.get_running_loop()
         while self.is_alive:
-            task = loop.create_task(handle(*await self.queue.get()))
+            task = loop.create_task(datagram_handler(*await self.queue.get()))
             self.future.add_done_callback(task.cancel)
 
 

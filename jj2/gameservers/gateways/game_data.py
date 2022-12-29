@@ -18,7 +18,7 @@ class GameDataClient(endpoints.UDPClient):
         return cs.Byte.build(least % 251) + cs.Byte.build(most % 251)
 
     def validate_data(self, datagram, addr=None):
-        checksum = bytes((datagram.pop(0), datagram.pop(0)))
+        checksum, datagram[:] = datagram[:2], datagram[2:]
         return checksum == self.datagram_checksum(datagram)
 
 
@@ -26,7 +26,3 @@ class GameDataClient(endpoints.UDPClient):
 class GameDataHandler(endpoints.DatagramEndpointHandler):
     async def communicate(self, pool=None):
         await self.queue_looping()
-
-
-
-
