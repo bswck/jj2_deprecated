@@ -39,7 +39,7 @@ class MOTDConnection(endpoints.ConnectionHandler):
 
 def get_motd(*addresses, client_class=MOTDClient, setup_timeout=0.7, timeout=1):
     client = client_class(handler_kwargs=dict(motd=(motd := MessageOfTheDay())))
-    endpoints.start_client(client, *addresses, setup_timeout=setup_timeout, timeout=timeout)
+    endpoints.start_race(client, *addresses, setup_timeout=setup_timeout, timeout=timeout)
     return motd
 
 

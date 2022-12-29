@@ -70,7 +70,7 @@ class BinaryListConnection(endpoints.ConnectionHandler):
 
 def get_binarylist(*addresses, client_class=BinaryListClient, setup_timeout=0.4, timeout=1):
     client = client_class(handler_kwargs=dict(servers=(servers := [])))
-    endpoints.start_client(client, *addresses, setup_timeout=setup_timeout, timeout=timeout)
+    endpoints.start_race(client, *addresses, setup_timeout=setup_timeout, timeout=timeout)
     return servers
 
 

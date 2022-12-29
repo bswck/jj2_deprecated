@@ -23,6 +23,8 @@ if typing.TYPE_CHECKING:
 
 
 _IPAddressT = typing.ForwardRef('ipaddress.IPv4Address | ipaddress.IPv6Address | None')
+_TimeoutT = typing.Union[int, float, None]
+_UDPAddressT = typing.Tuple[str, int]
 
 
 class BaseEndpointHandler:
@@ -68,7 +70,7 @@ class BaseEndpointHandler:
         return not (self.future.done() or self.future.cancelled())
 
     @property
-    def address(self) -> tuple[str, int]:
+    def address(self) -> _UDPAddressT:
         """The address of the remote endpoint in a (domain, port) format."""
         return self._domain, self._port
 
@@ -366,7 +368,7 @@ class DatagramEndpointHandler(BaseEndpointHandler):
             self.write_to(datagram)
 
     @functools.singledispatchmethod
-    def write_to(self, datagram: str | bytes, addr: tuple[str, int] | None = None):
+    def write_to(self, datagram: str | bytes, addr: _UDPAddressT | None = None):
         """Send data through the endpoint, bytes or string."""
         warnings.warn(
             f'unknown write_to() datagram type {type(datagram).__name__}, defaulting to message()'
@@ -381,7 +383,7 @@ class DatagramEndpointHandler(BaseEndpointHandler):
     def message_to(self, datagram, addr=None):
         self.send_to(datagram.encode(self.MSG_ENCODING), addr)
 
-    def on_datagram(self, datagram: bytearray, addr: tuple[str, int]):
+    def on_datagram(self, datagram: bytearray, addr: _UDPAddressT):
         original = datagram.copy()
         if self.endpoint.validate_data(datagram, addr):
             try:
@@ -393,14 +395,14 @@ class DatagramEndpointHandler(BaseEndpointHandler):
             self.on_invalid_datagram(original, addr)
 
     # noinspection PyUnusedLocal
-    def on_queue_overflow(self, addr: tuple[str, int]):
+    def on_queue_overflow(self, addr: _UDPAddressT):
         """Called when the datagram queue overflows."""
         self.stop()
 
-    def on_invalid_datagram(self, datagram: bytearray, addr: tuple[str, int]):
+    def on_invalid_datagram(self, datagram: bytearray, addr: _UDPAddressT):
         """Called when the incoming datagram did not pass validation."""
 
-    async def handle_datagram(self, datagram: bytes, addr: tuple[str, int]):
+    async def handle_datagram(self, datagram: bytes, addr: _UDPAddressT):
         """Called when a new valid datagram has just been dequeued."""
 
     async def queue_looping(self, handle=None):
@@ -408,7 +410,8 @@ class DatagramEndpointHandler(BaseEndpointHandler):
             handle = self.handle_datagram
         loop = asyncio.get_running_loop()
         while self.is_alive:
-            loop.create_task(handle(*await self.queue.get()))
+            task = loop.create_task(handle(*await self.queue.get()))
+            self.future.add_done_callback(task.cancel)
 
 
 def communication_backend(endpoint_class: type[Endpoint], method=None):
@@ -436,8 +439,6 @@ class HandlerPool:
     def __init__(self, future: asyncio.Future | None = None):
         self.future = future
         self._future_bound = False
-        self.tasks = []
-        self.setup_incomplete = False
         self.handlers = weakref.WeakSet()
 
     def bind_future(self, future=None):
@@ -447,7 +448,6 @@ class HandlerPool:
             loop = asyncio.get_event_loop()
             future = loop.create_future()
         self.future = future
-        self.future.add_done_callback(self.on_future_done)
         self._future_bound = True
 
     def sync(
@@ -462,22 +462,6 @@ class HandlerPool:
                 handlers.discard(excluded_handler)
         for handler in handlers:
             handler.on_sync(self, data, *args)
-
-    def cancel(self):
-        """Cancel pending and current connection-related tasks."""
-        self.cancel_pending_tasks()
-        self.cancel_current_tasks()
-
-    def on_future_done(self, _result):
-        """Pool future done callback."""
-        self.cancel_current_tasks()
-
-    def cancel_pending_tasks(self):
-        self.future.cancel()
-
-    def cancel_current_tasks(self):
-        for task in self.tasks:
-            task.cancel()
 
     def end(self):
         self.future.set_result(None)
@@ -512,7 +496,9 @@ class HandlerPool:
         loop = asyncio.get_running_loop()
         if isinstance(task, typing.Coroutine):
             task = loop.create_task(task)
-        self.tasks.append(task)
+        self.bind_future()
+        if self.future:
+            self.future.add_done_callback(task.cancel)
 
     async def on_endpoint(
         self,
@@ -572,7 +558,11 @@ class Endpoint:
     def is_ssl(self) -> bool:
         return self.endpoint_kwargs.get('ssl_context') is not None
 
-    def create_handler(self, future: asyncio.Future, *args, **kwargs) -> handler_class:
+    def create_handler(
+            self,
+            future: asyncio.Future,
+            *args: Any, **kwargs: Any
+    ) -> handler_class:
         handler = self.handler_class(future, self, *args, **kwargs)
         handler.__post_init__(**self.handler_kwargs)
         self.handlers.append(handler)
@@ -582,8 +572,8 @@ class Endpoint:
         self,
         setup: Callable[[Endpoint], ...] | None = None,
         blocking: bool = True,
-        setup_timeout=None,
-        timeout=None
+        setup_timeout: _TimeoutT = None,
+        timeout: _TimeoutT = None
     ):
         try:
             loop = asyncio.get_running_loop()
@@ -611,11 +601,16 @@ class Endpoint:
         cls: type,
         setup: Callable[[Endpoint], ...] | None = None,
         blocking: bool = True,
-        timeout: int | None = None
+        setup_timeout: _TimeoutT = None,
+        timeout: _TimeoutT = None
     ):
         concurrent = cls(
             target=self.start,
-            kwargs=dict(setup=setup, blocking=True)
+            kwargs=dict(
+                setup=setup,
+                setup_timeout=setup_timeout,
+                blocking=True
+            )
         )
         concurrent.start()
         if blocking:
@@ -626,12 +621,14 @@ class Endpoint:
         self,
         setup: Callable[[Endpoint], ...] | None = None,
         blocking: bool = True,
-        timeout: int | None = None
+        setup_timeout: _TimeoutT = None,
+        timeout: _TimeoutT = None
     ):
         """Start an endpoint in a separate thread."""
         return self.start_concurrent(
             threading.Thread, setup,
             blocking=blocking,
+            setup_timeout=setup_timeout,
             timeout=timeout
         )
 
@@ -639,12 +636,14 @@ class Endpoint:
         self,
         setup: Callable[[Endpoint], ...] | None = None,
         blocking: bool = True,
-        timeout: int | None = None
+        setup_timeout: _TimeoutT = None,
+        timeout: _TimeoutT = None
     ):
         """Start an endpoint in a separate process."""
         return self.start_concurrent(
             multiprocessing.Process, setup,
             blocking=blocking,
+            setup_timeout=setup_timeout,
             timeout=timeout
         )
 
@@ -656,7 +655,7 @@ class Endpoint:
                 connection.stop()
             connections.clear()
 
-    def validate_data(self, data: bytearray, addr: tuple[str, int] | None):
+    def validate_data(self, data: bytearray):
         return True
 
     async def begin(
@@ -782,7 +781,8 @@ class UDPServer(UDPEndpoint):
 
 
 # Recipes
-def start_with_timeouts(client, setup, setup_timeout=None, timeout=None):
+def start_client(client, setup, setup_timeout=None, timeout=None):
+    """Start a client and suppress the timeout error."""
     try:
         client.start(setup, setup_timeout=setup_timeout, timeout=timeout)
     except asyncio.TimeoutError:
@@ -791,10 +791,29 @@ def start_with_timeouts(client, setup, setup_timeout=None, timeout=None):
         client.stop()
 
 
-def start_client(client, *addresses, setup_timeout=None, timeout=None):
+def start_race(
+        client: TCPClient, 
+        *addresses: _UDPAddressT, 
+        setup_timeout: _TimeoutT = None, 
+        timeout: _TimeoutT = None
+):
+    """
+    Start a connection race.
+
+    Parameters
+    ----------
+    client : TCPClient
+    addresses : _UDPAddressT
+    setup_timeout : int or float or None
+    timeout : int or float or None
+
+    Returns
+    -------
+    client
+    """
     if not addresses:
         addresses = [[]]
-    start_with_timeouts(
+    start_client(
         client,
         lambda _: asyncio.gather(*(client.connect(*address) for address in addresses)),
         setup_timeout=setup_timeout, timeout=timeout
