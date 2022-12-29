@@ -117,7 +117,8 @@ class BaseEndpointHandler:
 
     def stop(self):
         """Immediately stop the connection communication."""
-        self.future.set_result(None)
+        if self.is_alive:
+            self.future.set_result(None)
 
     def sync(self, pool: HandlerPool, data: str | bytes, *args: Any, exclude_self: bool = True):
         """
