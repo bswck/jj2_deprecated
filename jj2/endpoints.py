@@ -53,6 +53,7 @@ class BaseEndpointHandler:
     ):
         self.future = future
         self.endpoint = endpoint
+        self.queue = asyncio.Queue()
 
         self._host = ipaddress.ip_address(self.IP_UNKNOWN)
         self._local_host = ipaddress.ip_address(self.IP_UNKNOWN)
@@ -122,18 +123,24 @@ class BaseEndpointHandler:
         if self.is_alive:
             self.future.set_result(None)
 
-    def sync(self, pool: HandlerPool, data: str | bytes, *args: Any, exclude_self: bool = True):
+    async def sync(
+            self,
+            pool: HandlerPool,
+            data: str | bytes,
+            *args: Any,
+            exclude_self: bool = True
+    ):
         """
         Synchronize :param:`data` in the entire :param:`pool`.
         Exclude this connection by default.
         """
         if exclude_self:
-            pool.sync(data, *args, exclude_handlers=[self])
+            await pool.sync(data, *args, exclude_handlers=[self])
         else:
-            pool.sync(data, *args)
+            await pool.sync(data, *args)
 
     # noinspection PyUnusedLocal
-    def on_sync(self, pool: HandlerPool, data: str | bytes):
+    async def on_sync(self, pool: HandlerPool, data: str | bytes):
         """
         Receive synchronization request from :param:`pool`
         to send :param:`data` through this connection.
@@ -230,6 +237,36 @@ class BaseEndpointHandler:
         cls._validation_backends.register(endpoint_class, lambda _: method)
         return method
 
+    # noinspection PyUnusedLocal
+    def on_queue_overflow(self, *args: Any):
+        """Called when the datagram queue overflows."""
+        self.stop()
+
+    def on_invalid_data(self, data: bytearray, *args: Any):
+        """Called when the incoming data did not pass validation."""
+
+    async def handle_data(self, data: bytes, *args: Any):
+        """Called when a new valid data has just been dequeued."""
+
+    async def data_loop(self, data_handler=None):
+        if data_handler is None:
+            data_handler = self.handle_data
+        loop = asyncio.get_running_loop()
+        while self.is_alive:
+            task = loop.create_task(data_handler(*await self.queue.get()))
+            self.future.add_done_callback(task.cancel)
+
+    def on_data(self, data: bytearray, *args: Any):
+        original = data.copy()
+        if self.endpoint.validate_data(data, *args):
+            try:
+                self.queue.put_nowait((bytes(data), *args))
+            except asyncio.QueueFull:
+                # Potential DoS/DDoS attack
+                self.on_queue_overflow(*args)
+        else:
+            self.on_invalid_data(original, *args)
+
     def __init_subclass__(cls):
         default_dispatch = (lambda _: NotImplemented)
         cls._communication_backends = staticmethod(functools.singledispatch(default_dispatch))
@@ -263,40 +300,41 @@ class ConnectionHandler(BaseEndpointHandler):
         self._domain = socket.getfqdn(self._host.compressed)
         self._local_domain = socket.getfqdn(self._local_host.compressed)
 
-    def on_sync(self, pool: HandlerPool, data: str | bytes):
-        self.write(data)
+    async def on_sync(self, pool: HandlerPool, data: str | bytes):
+        await self.write(data)
 
     @functools.singledispatchmethod
-    def write(self, data: str | bytes):
+    async def write(self, data: str | bytes):
         """Send data through the connection, bytes or string."""
         warnings.warn(f'unknown write() data type {type(data).__name__}, defaulting to message()')
-        self.message(data)
+        await self.message(data)
 
     @write.register(bytes)
-    def send(self, data: bytes):
+    async def send(self, data: bytes):
         self.writer.write(data)
+        await self.writer.drain()
 
     @write.register(str)
-    def message(self, data: str):
-        self.send(data.encode(self.MSG_ENCODING))
+    async def message(self, data: str):
+        await self.send(data.encode(self.MSG_ENCODING))
 
-    def read(self, n=-1):
-        return self.handle_read(self.reader.read(n))
+    async def read(self, n=-1):
+        return await self.handle_read(await self.reader.read(n))
 
-    def read_exactly(self, n):
+    async def read_exactly(self, n):
         try:
-            data = self.reader.readexactly(n)
+            data = await self.reader.readexactly(n)
         except asyncio.IncompleteReadError as exc:
             data = exc.partial
             missing = exc.expected - len(data)
         else:
             missing = 0
-        return self.handle_read(data, missing)
+        return await self.handle_read(data, missing)
 
-    def read_until(self, sep):
-        return self.handle_read(self.reader.readuntil(sep))
+    async def read_until(self, sep):
+        return await self.handle_read(await self.reader.readuntil(sep))
 
-    def handle_read(self, data, missing=0):
+    async def handle_read(self, data, missing=0):
         if not missing:
             if not data:  # stream EOF
                 self.stop()
@@ -321,7 +359,7 @@ class DatagramProtocol(asyncio.DatagramProtocol):
     def datagram_received(self, datagram, addr) -> None:
         if not self.handler:
             return
-        self.handler.on_datagram(bytearray(datagram))
+        self.handler.on_data(bytearray(datagram))
 
     def error_received(self, exc) -> None:
         if not self.handler:
@@ -351,10 +389,10 @@ class DatagramEndpointHandler(BaseEndpointHandler):
             loop = asyncio.SelectorEventLoop()
             asyncio.set_event_loop(loop)
         super().__init__(future, endpoint)
+        self.future.add_done_callback(transport.abort)
         self.transport = transport
         self.protocol = protocol
         self.protocol.set_handler(self)
-        self.queue = asyncio.Queue()
 
     def connection_lost(self, exc: Exception | None):
         if exc:
@@ -363,55 +401,25 @@ class DatagramEndpointHandler(BaseEndpointHandler):
             self.future.set_result(None)
         self.transport = None
 
-    def on_sync(self, pool, datagram):
+    async def on_sync(self, pool, datagram):
         if self.transport:
-            self.write_to(datagram)
+            await self.write_to(datagram)
 
     @functools.singledispatchmethod
-    def write_to(self, datagram: str | bytes, addr: _AddressT | None = None):
+    async def write_to(self, datagram: str | bytes, addr: _AddressT | None = None):
         """Send data through the endpoint, bytes or string."""
         warnings.warn(
             f'unknown write_to() datagram type {type(datagram).__name__}, defaulting to message()'
         )
-        self.message_to(datagram, addr)
+        await self.message_to(datagram, addr)
 
     @write_to.register(bytes)
-    def send_to(self, datagram, addr=None):
+    async def send_to(self, datagram, addr=None):
         self.transport.sendto(datagram, addr)
 
     @write_to.register(str)
-    def message_to(self, datagram, addr=None):
-        self.send_to(datagram.encode(self.MSG_ENCODING), addr)
-
-    def on_datagram(self, datagram: bytearray, addr: _AddressT):
-        original = datagram.copy()
-        if self.endpoint.validate_data(datagram, addr):
-            try:
-                self.queue.put_nowait((bytes(datagram), addr))
-            except asyncio.QueueFull:
-                # Potential DoS/DDoS attack
-                self.on_queue_overflow(addr)
-        else:
-            self.on_invalid_datagram(original, addr)
-
-    # noinspection PyUnusedLocal
-    def on_queue_overflow(self, addr: _AddressT):
-        """Called when the datagram queue overflows."""
-        self.stop()
-
-    def on_invalid_datagram(self, datagram: bytearray, addr: _AddressT):
-        """Called when the incoming datagram did not pass validation."""
-
-    async def handle_datagram(self, datagram: bytes, addr: _AddressT):
-        """Called when a new valid datagram has just been dequeued."""
-
-    async def queue_looping(self, datagram_handler=None):
-        if datagram_handler is None:
-            datagram_handler = self.handle_datagram
-        loop = asyncio.get_running_loop()
-        while self.is_alive:
-            task = loop.create_task(datagram_handler(*await self.queue.get()))
-            self.future.add_done_callback(task.cancel)
+    async def message_to(self, datagram, addr=None):
+        await self.send_to(datagram.encode(self.MSG_ENCODING), addr)
 
 
 def communication_backend(endpoint_class: type[Endpoint], method=None):
@@ -450,7 +458,7 @@ class HandlerPool:
         self.future = future
         self._future_bound = True
 
-    def sync(
+    async def sync(
             self,
             data: str | bytes,
             *args: Any,
@@ -460,8 +468,10 @@ class HandlerPool:
         if exclude_handlers:
             for excluded_handler in exclude_handlers:
                 handlers.discard(excluded_handler)
-        for handler in handlers:
+        await asyncio.gather(*(
             handler.on_sync(self, data, *args)
+            for handler in handlers
+        ))
 
     def end(self):
         self.future.set_result(None)

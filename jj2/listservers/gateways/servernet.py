@@ -163,18 +163,18 @@ class ServerNetHandler(endpoints.ConnectionHandler):
             self.make_job(payload)
         if self.job:
             try:
-                self.dispatch_job()
+                await self.dispatch_job()
             finally:
                 self.stop()
 
-    def dispatch_job(self):
+    async def dispatch_job(self):
         sender = type(self)
         action_name = self.job.action
         for subcontext in self.context:
             signal = self.jobs.signal(action_name)
             signal.send_to(sender, **subcontext)
         if self.can_sync:
-            self.sync_job()
+            await self.sync_job()
 
     def commission(self, action, *data, origin=None):
         if origin is None:
@@ -187,14 +187,14 @@ class ServerNetHandler(endpoints.ConnectionHandler):
         payload = self.encode_payload(job_obj)
         self.write(payload)
 
-    def sync_job(self):
+    async def sync_job(self):
         job_obj = self.job_class(
             action=self.job.action,
             data=list(self.sync_chunks),
             origin=self.host
         )
         payload = self.encode_payload(job_obj)
-        self.sync(self.mirror_pool, payload)
+        await self.sync(self.mirror_pool, payload)
 
 
 _ORIG_FUNC_ATTR = 'func'
