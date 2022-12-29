@@ -488,11 +488,10 @@ class HandlerPool:
         self.future.set_result(None)
 
     async def run(self, handler):
-        self.bind_future()
-
         if not handler.is_alive:
             return
 
+        self.bind_future()
         self.handlers.add(handler)
         communicate = (
             handler.communicate if handler.endpoint.pool is self
