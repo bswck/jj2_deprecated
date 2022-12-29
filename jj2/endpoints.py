@@ -813,7 +813,7 @@ def start_race(
     Parameters
     ----------
     client : TCPClient
-    addresses : _UDPAddressT
+    addresses : _AddressT
     setup_timeout : int or float or None
     timeout : int or float or None
 
