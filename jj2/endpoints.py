@@ -48,8 +48,6 @@ class BaseEndpointHandler:
         self,
         future: asyncio.Future,
         endpoint: Endpoint,
-        *__args,
-        **__kwargs
     ):
         self.future = future
         self.endpoint = endpoint
@@ -198,6 +196,7 @@ class BaseEndpointHandler:
             communicate = functools.partial(callback, self)
         return await (communicate(pool) if pool else communicate())
 
+    # noinspection PyUnusedLocal
     async def communicate_default(self, pool: HandlerPool | None = None):
         """
         A single frame in the connection life.
@@ -567,10 +566,6 @@ class Endpoint:
         self.endpoint_kwargs = endpoint_kwargs
         self.handler_kwargs = handler_kwargs or {}
 
-        self._endpoints: list = []
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._future: asyncio.Future | None = None
-
         if wrapper_class:
             self.handler_class = wrapper_class
 
@@ -599,7 +594,6 @@ class Endpoint:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             loop = asyncio.get_event_loop()
-        self._loop = loop
 
         task = None
         if callable(setup):
