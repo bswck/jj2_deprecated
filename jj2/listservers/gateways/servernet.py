@@ -36,12 +36,12 @@ class Job:
             raise ValueError('invalid ServerNet job commission')
 
 
-class ServerNet(endpoints.Server):
+class ServerNet(endpoints.TCPServer):
     default_port = constants.DEFAULT_LISTSERVER_PORT.SERVERNET
 
 
 @ServerNet.handler
-class ServerNetHandler(endpoints.EndpointHandler):
+class ServerNetHandler(endpoints.ConnectionHandler):
     endpoint: ServerNet
 
     jobs = blinker.Namespace()
@@ -172,7 +172,7 @@ class ServerNetHandler(endpoints.EndpointHandler):
         action_name = self.job.action
         for subcontext in self.context:
             signal = self.jobs.signal(action_name)
-            signal.sendto(sender, **subcontext)
+            signal.send_to(sender, **subcontext)
         if self.can_sync:
             self.sync_job()
 

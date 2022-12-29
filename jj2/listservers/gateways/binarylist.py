@@ -18,7 +18,7 @@ DUMMY_SERVERS = (
 )
 
 
-class BinaryListServer(endpoints.Server):
+class BinaryListServer(endpoints.TCPServer):
     default_port = constants.DEFAULT_LISTSERVER_PORT.BINARYLIST
     use_dummy_servers = True
 
@@ -30,7 +30,7 @@ class BinaryListClient(endpoints.TCPClient):
 
 @BinaryListServer.handler
 @BinaryListClient.handler
-class BinaryListConnection(endpoints.EndpointHandler):
+class BinaryListConnection(endpoints.ConnectionHandler):
     payload_header: bytes = b'\x07LIST\x01\x01'
     endpoint_class: BinaryListServer
 
@@ -70,7 +70,7 @@ class BinaryListConnection(endpoints.EndpointHandler):
 
 def get_binarylist(*addresses, client_class=BinaryListClient, setup_timeout=0.4, timeout=1):
     client = client_class(handler_kwargs=dict(servers=(servers := [])))
-    endpoints.gather_connect(client, *addresses, setup_timeout=setup_timeout, timeout=timeout)
+    endpoints.start_client(client, *addresses, setup_timeout=setup_timeout, timeout=timeout)
     return servers
 
 

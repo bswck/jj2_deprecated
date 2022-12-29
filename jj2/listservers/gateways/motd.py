@@ -6,7 +6,7 @@ from jj2.listservers import db
 from jj2.listservers.entities import MessageOfTheDay
 
 
-class MOTDServer(endpoints.Server):
+class MOTDServer(endpoints.TCPServer):
     default_port = constants.DEFAULT_LISTSERVER_PORT.MOTD
 
 
@@ -17,7 +17,7 @@ class MOTDClient(endpoints.TCPClient):
 
 @MOTDServer.handler
 @MOTDClient.handler
-class MOTDConnection(endpoints.EndpointHandler):
+class MOTDConnection(endpoints.ConnectionHandler):
     MSG_ENCODING = 'ASCII'
 
     def __post_init__(self, motd=None):
@@ -39,7 +39,7 @@ class MOTDConnection(endpoints.EndpointHandler):
 
 def get_motd(*addresses, client_class=MOTDClient, setup_timeout=0.7, timeout=1):
     client = client_class(handler_kwargs=dict(motd=(motd := MessageOfTheDay())))
-    endpoints.gather_connect(client, *addresses, setup_timeout=setup_timeout, timeout=timeout)
+    endpoints.start_client(client, *addresses, setup_timeout=setup_timeout, timeout=timeout)
     return motd
 
 

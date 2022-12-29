@@ -12,7 +12,7 @@ from jj2.listservers import entities
 DEFAULT_PORT = 10057
 
 
-class ASCIIListServer(endpoints.Server):
+class ASCIIListServer(endpoints.TCPServer):
     default_port = constants.DEFAULT_LISTSERVER_PORT.ASCIILIST
 
 
@@ -23,7 +23,7 @@ class ASCIIListClient(endpoints.TCPClient):
 
 @ASCIIListServer.handler
 @ASCIIListClient.handler
-class ASCIIListConnection(endpoints.EndpointHandler):
+class ASCIIListConnection(endpoints.ConnectionHandler):
     MSG_ENCODING = 'ASCII'
     SPLITTER = '\r\n'
 
@@ -62,7 +62,7 @@ class ASCIIListConnection(endpoints.EndpointHandler):
 
 def get_asciilist(*addresses, client_class=ASCIIListClient, setup_timeout=0.7, timeout=1):
     client = client_class(handler_kwargs=dict(servers=(servers := [])))
-    endpoints.gather_connect(client, *addresses, setup_timeout=setup_timeout, timeout=timeout)
+    endpoints.start_client(client, *addresses, setup_timeout=setup_timeout, timeout=timeout)
     return servers
 
 
