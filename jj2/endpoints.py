@@ -121,7 +121,11 @@ class BaseEndpointHandler:
     def stop(self):
         """Immediately stop the connection communication."""
         if self.is_alive:
+            self._stop()
             self.future.set_result(None)
+
+    def _stop(self):
+        """Perform all operations needed to stop."""
 
     async def sync(
             self,
@@ -340,6 +344,9 @@ class ConnectionHandler(BaseEndpointHandler):
                 self.stop()
         return data
 
+    def _stop(self):
+        self.writer.close()
+
     def __init_subclass__(cls):
         super().__init_subclass__()
         if isinstance(cls.write, functools.singledispatchmethod):
@@ -400,6 +407,10 @@ class DatagramEndpointHandler(BaseEndpointHandler):
         else:
             self.future.set_result(None)
         self.transport = None
+
+    def _stop(self):
+        if self.transport:
+            self.transport.close()
 
     async def on_sync(self, pool, datagram):
         if self.transport:
@@ -659,11 +670,11 @@ class Endpoint:
 
     def stop(self):
         """Stop all connections bound to this endpoint."""
-        connections = self.handlers
-        if connections:
-            for connection in connections:
-                connection.stop()
-            connections.clear()
+        handlers = self.handlers
+        if handlers:
+            for handler in handlers:
+                handler.stop()
+            handlers.clear()
 
     def validate_data(self, data: bytearray):
         return True
