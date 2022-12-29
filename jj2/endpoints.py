@@ -24,7 +24,7 @@ if typing.TYPE_CHECKING:
 
 _IPAddressT = typing.ForwardRef('ipaddress.IPv4Address | ipaddress.IPv6Address | None')
 _TimeoutT = typing.Union[int, float, None]
-_UDPAddressT = typing.Tuple[str, int]
+_AddressT = typing.Tuple[str, int]
 
 
 class BaseEndpointHandler:
@@ -70,14 +70,14 @@ class BaseEndpointHandler:
         return not (self.future.done() or self.future.cancelled())
 
     @property
-    def address(self) -> _UDPAddressT:
+    def address(self) -> _AddressT:
         """The address of the remote endpoint in a (domain, port) format."""
-        return self._domain, self._port
+        return self.domain, self.port
 
     @property
-    def str_address(self) -> str:
-        """The address of the remote endpoint in a 'domain:port' format."""
-        return f'{self._domain}:{self._port}'
+    def address_string(self) -> str:
+        """The address of the remote endpoint in a string 'domain:port' format."""
+        return f'{self.domain}:{self.port}'
 
     @property
     def domain(self) -> str:
@@ -85,7 +85,7 @@ class BaseEndpointHandler:
         The domain of the remote endpoint.
         For instace if the remote endpoint host is '149.210.206.11', the domain is 'pukenukem.com'.
         """
-        return self._domain
+        return self._domain or self.IP_UNKNOWN
 
     @property
     def host(self) -> _IPAddressT:
@@ -95,17 +95,17 @@ class BaseEndpointHandler:
     @property
     def port(self) -> int:
         """The port of the remote endpoint."""
-        return self._port
+        return self._port or 0
 
     @property
     def local_address(self) -> str:
         """The address of the local endpoint in a 'local domain:local port' format."""
-        return f'{self._local_domain}:{self._local_port}'
+        return f'{self.local_domain}:{self.local_port}'
 
     @property
     def local_domain(self) -> str:
         """The domain of the local endpoint."""
-        return self._local_domain
+        return self._local_domain or self.IP_UNKNOWN
 
     @property
     def local_host(self) -> _IPAddressT:
@@ -115,7 +115,7 @@ class BaseEndpointHandler:
     @property
     def local_port(self) -> int:
         """The port of the local endpoint."""
-        return self._local_port
+        return self._local_port or 0
 
     def stop(self):
         """Immediately stop the connection communication."""
@@ -368,7 +368,7 @@ class DatagramEndpointHandler(BaseEndpointHandler):
             self.write_to(datagram)
 
     @functools.singledispatchmethod
-    def write_to(self, datagram: str | bytes, addr: _UDPAddressT | None = None):
+    def write_to(self, datagram: str | bytes, addr: _AddressT | None = None):
         """Send data through the endpoint, bytes or string."""
         warnings.warn(
             f'unknown write_to() datagram type {type(datagram).__name__}, defaulting to message()'
@@ -383,7 +383,7 @@ class DatagramEndpointHandler(BaseEndpointHandler):
     def message_to(self, datagram, addr=None):
         self.send_to(datagram.encode(self.MSG_ENCODING), addr)
 
-    def on_datagram(self, datagram: bytearray, addr: _UDPAddressT):
+    def on_datagram(self, datagram: bytearray, addr: _AddressT):
         original = datagram.copy()
         if self.endpoint.validate_data(datagram, addr):
             try:
@@ -395,14 +395,14 @@ class DatagramEndpointHandler(BaseEndpointHandler):
             self.on_invalid_datagram(original, addr)
 
     # noinspection PyUnusedLocal
-    def on_queue_overflow(self, addr: _UDPAddressT):
+    def on_queue_overflow(self, addr: _AddressT):
         """Called when the datagram queue overflows."""
         self.stop()
 
-    def on_invalid_datagram(self, datagram: bytearray, addr: _UDPAddressT):
+    def on_invalid_datagram(self, datagram: bytearray, addr: _AddressT):
         """Called when the incoming datagram did not pass validation."""
 
-    async def handle_datagram(self, datagram: bytes, addr: _UDPAddressT):
+    async def handle_datagram(self, datagram: bytes, addr: _AddressT):
         """Called when a new valid datagram has just been dequeued."""
 
     async def queue_looping(self, handle=None):
@@ -793,7 +793,7 @@ def start_client(client, setup, setup_timeout=None, timeout=None):
 
 def start_race(
         client: TCPClient, 
-        *addresses: _UDPAddressT, 
+        *addresses: _AddressT,
         setup_timeout: _TimeoutT = None, 
         timeout: _TimeoutT = None
 ):

@@ -42,7 +42,7 @@ class BinaryListConnection(endpoints.ConnectionHandler):
 
     @endpoints.communication_backend(BinaryListServer)
     async def send_list(self):
-        logger.info(f'Sending binary server list to {self.str_address}')
+        logger.info(f'Sending binary server list to {self.address_string}')
 
         db.delete_remote_servers()
         servers = []
@@ -55,10 +55,10 @@ class BinaryListConnection(endpoints.ConnectionHandler):
 
     @endpoints.communication_backend(BinaryListClient)
     async def read_list(self):
-        logger.info(f'Reading binary server list from {self.str_address}')
+        logger.info(f'Reading binary server list from {self.address_string}')
         servers = (await self.read()).strip()
         if not servers.startswith(self.payload_header):
-            logger.info(f'Invalid binary server list payload from {self.str_address}')
+            logger.info(f'Invalid binary server list payload from {self.address_string}')
             return self.stop()
         servers = servers.removeprefix(self.payload_header)
         loaded = entities.GameServer.from_binarylist_reprs(servers, isolated=self.memory_isolated)

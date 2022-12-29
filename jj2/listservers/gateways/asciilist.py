@@ -35,7 +35,7 @@ class ASCIIListConnection(endpoints.ConnectionHandler):
 
     @endpoints.communication_backend(ASCIIListServer)
     async def send_list(self):
-        logger.info(f'Sending ASCII server list to {self.str_address}')
+        logger.info(f'Sending ASCII server list to {self.address_string}')
 
         db.delete_remote_servers()
         servers = db.read_servers(
@@ -47,7 +47,7 @@ class ASCIIListConnection(endpoints.ConnectionHandler):
 
     @endpoints.communication_backend(ASCIIListClient)
     async def read_list(self):
-        logger.info(f'Reading ASCII server list from {self.str_address}')
+        logger.info(f'Reading ASCII server list from {self.address_string}')
         servers = (await self.read()).strip().decode().split(self.SPLITTER)
         loader = functools.partial(
             entities.GameServer.from_asciilist_repr,
