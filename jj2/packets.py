@@ -2,8 +2,7 @@
 Introducing packets:
 data-holding classes that can be serialized into bytes and then recreated from them.
 
-Unlike pickling, safety of this process is guaranteed to be safe and is fully
-designed by the programmer.
+Unlike pickling, this process is guaranteed to be safe and is fully designed by the programmer.
 
 Works with the _construct_ library behind the scenes.
 """
