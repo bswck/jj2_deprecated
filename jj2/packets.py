@@ -173,7 +173,6 @@ class _Generic:
             [*args] = map(_call_field_construct, map(factory_from_type_hint, args))
             if len(set(args)) > 1:
                 return _Construct(cs.Sequence(*args))
-            print(args)
             subcon = _Construct(args[0])
         if count is None:
             return _Construct(cs.GreedyRange(_call_field_construct(subcon)))
