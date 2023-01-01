@@ -9,7 +9,6 @@ Works with the _construct_ library behind the scenes.
 
 from __future__ import annotations
 
-import abc
 import contextlib
 import copy
 import dataclasses
@@ -24,7 +23,7 @@ import construct as cs
 from jj2.constants import DEFAULT_COMMUNICATION_ENCODING
 
 
-class ConstructFactory(metaclass=abc.ABCMeta):
+class ConstructFactory:
     @classmethod
     def construct(cls) -> cs.Construct:
         """Return a construct for self-serialization and self-deserialization."""
@@ -326,7 +325,8 @@ char = Int8sn
 unsigned_char = Int8un
 
 
-class PacketBase(ConstructFactory, metaclass=abc.ABCMeta):
+# noinspection PyAbstractClass
+class PacketBase(ConstructFactory):
     def __class_getitem__(cls, args):
         if not isinstance(args, tuple):
             args = (args,)
@@ -338,7 +338,16 @@ class PacketBase(ConstructFactory, metaclass=abc.ABCMeta):
 
 
 def make_inner_of(inner_cls, wrapper_cls, /, **kwds):
-    class BoundSubconstruct(PacketBase):
+
+    class BoundSubconstructMeta(type):
+        def __repr__(self):
+            return cls_name
+
+        @property
+        def __name__(cls):
+            return cls_name
+
+    class BoundSubconstruct(PacketBase, metaclass=BoundSubconstructMeta):
         def __init__(self, *args, **kwargs):
             self._data_for_building = wrapper_cls.init(inner_cls, self, *args, **kwargs)
 
@@ -376,7 +385,7 @@ def make_inner_of(inner_cls, wrapper_cls, /, **kwds):
         def __repr__(self):
             return wrapper_cls.repr(inner_cls, instance=self, **kwds)
 
-    BoundSubconstruct.__name__ = wrapper_cls.repr(inner_cls, **kwds)
+    cls_name = wrapper_cls.repr(inner_cls, **kwds)
     return BoundSubconstruct
 
 
@@ -558,7 +567,7 @@ class PacketSubconstruct(PacketBase):
     def of(cls, packet=None, **kwargs):
         if packet is None:
             return functools.partial(cls.of, **kwargs)
-        return packet.make_inner_of(cls, **kwargs)
+        return deduce_factory(packet).make_inner_of(cls, **kwargs)
 
 
 class _HomogeneousCollectionSubconstruct(PacketSubconstruct):
