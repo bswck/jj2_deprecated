@@ -548,16 +548,30 @@ class PacketSubconstruct(PacketBase):
         return kwargs
 
     @staticmethod
-    def init(inner_cls, instance):
-        pass
+    def init(inner_cls, instance, *args, **kwargs):
+        instance._wrapped = wrapped = inner_cls(*args, **kwargs)
+        return wrapped if isinstance(inner_cls, _Construct) else wrapped._get_data_for_building()
 
     @staticmethod
-    def load(outer_cls, inner_cls, context, **kwargs):
-        pass
+    def load(outer_cls, inner_cls, args, **kwargs):
+        return outer_cls(*args, **kwargs)
 
-    @staticmethod
-    def repr(inner_cls, instance=None, **kwds):
-        return object.__repr__(instance) if instance is not None else object.__repr__(inner_cls)
+    @classmethod
+    def repr(cls, inner_cls, instance=None, **kwds):
+        return (
+            cls.__name__
+            + (', '.join(
+                filter(None, (
+                    inner_cls.type_name
+                    if isinstance(inner_cls, _Construct)
+                    else inner_cls.__name__,
+                    ', '.join(
+                        f'{key!s}={value!r}'
+                        for key, value in kwds.items())
+                ))
+            )).join('<>')
+            + (f'({instance._wrapped})' if instance is not None else '')
+        )
 
     @staticmethod
     def iter(instance):
@@ -573,7 +587,7 @@ class PacketSubconstruct(PacketBase):
 class _HomogeneousCollectionSubconstruct(PacketSubconstruct):
     @staticmethod
     def init(inner_cls, instance, *inits):
-        instance._args = [
+        instance._wrapped = [
             (
                 init if (isinstance(inner_cls, type) and isinstance(init, inner_cls))
                 else (
@@ -584,38 +598,27 @@ class _HomogeneousCollectionSubconstruct(PacketSubconstruct):
             for init in inits
         ]
         if isinstance(inner_cls, _Construct):
-            return copy.deepcopy(instance._args)
-        return [member._get_data_for_building() for member in instance._args]
+            return copy.deepcopy(instance._wrapped)
+        return [member._get_data_for_building() for member in instance._wrapped]
 
     @staticmethod
-    def load(outer_cls, inner_cls, context, **kwargs):
+    def load(outer_cls, inner_cls, args, **kwargs):
         return outer_cls(*(
-            inner_cls(subcontext)
+            inner_cls(sub_args)
             if isinstance(inner_cls, _Construct)
-            else inner_cls._load_from_args(subcontext, **kwargs)
-            for subcontext in context
+            else inner_cls._load_from_args(sub_args, **kwargs)
+            for sub_args in args
         ))
 
     @classmethod
     def repr(cls, inner_cls, instance=None, **kwds):
-        return (
-            cls.__name__
-            + ', '.join(
-                filter(None, (
-                    inner_cls.type_name
-                    if isinstance(inner_cls, _Construct)
-                    else inner_cls.__name__,
-                    ', '.join(
-                        f'{key!s}={value!r}'
-                        for key, value in kwds.items())
-                ))
-            ).join('<>')
-            + (', '.join(map(repr, instance._args)).join('()') if instance is not None else '')
+        return super().repr(inner_cls, **kwds) + (
+            ', '.join(map(repr, instance._wrapped)).join('()') if instance is not None else ''
         )
 
     @staticmethod
     def iter(instance):
-        yield from instance._args
+        yield from instance._wrapped
 
 
 class Array(_HomogeneousCollectionSubconstruct):
@@ -650,6 +653,13 @@ class Rebuild(PacketSubconstruct):
 class Default(PacketSubconstruct):
     _subconstruct_factory = cs.Default
 
+    @classmethod
+    def init(cls, inner_cls, instance, *args, **kwargs):
+        wrapped = None
+        if args or kwargs:
+            wrapped = super().init(inner_cls, instance, *args, **kwargs)
+        return wrapped
+
 
 class Optional(PacketSubconstruct):
     _subconstruct_factory = cs.Optional
@@ -682,3 +692,17 @@ PYTHON_GENERICS_AS_SUBCONSTRUCTS = {
     frozenset: _Generic(python_type=frozenset),
     tuple: _Generic(python_type=tuple),
 }
+
+
+if __name__ == '__main__':
+    arr_t = Default.of(LazyArray.of(int, count=2), value=[0, 0])
+    print(arr_t)
+    i = arr_t(1, 2)
+    print(i)
+    pkt = bytes(i)
+    print(pkt)
+    il = arr_t.load(pkt)
+    print(il)
+    i = arr_t()
+    print(i)
+    print(i.build())
