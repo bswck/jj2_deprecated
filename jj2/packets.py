@@ -533,9 +533,16 @@ if __name__ == '__main__':
     class MyPacket(Struct):
         header: tuple[int, tuple[int, str]]
 
+    # using array = Array<MyPacket, 2>;
     array = Array.of(MyPacket, count=2)
+
+    # instantiate the array
     pkt = array(MyPacket((1, (2, 'ez'))), MyPacket((3, (4, 'yo'))))
+
+    # serialize
     pickle = bytes(pkt)
     print(pickle)
+
+    # load from packet
     loaded = array.load(pickle)
     print(loaded)
