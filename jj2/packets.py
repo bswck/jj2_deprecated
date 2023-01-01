@@ -697,18 +697,3 @@ PYTHON_GENERICS_AS_SUBCONSTRUCTS = {
     frozenset: _Generic(python_type=frozenset),
     tuple: _Generic(python_type=tuple),
 }
-
-
-if __name__ == '__main__':
-    arr_t = Array.of(int)
-    print(arr_t)
-    o = arr_t(1, 2)
-    print(o)
-    pkt = bytes(o)
-    print(pkt)
-    ol = arr_t.load(pkt)
-    print(ol)
-    o = arr_t()
-    print(o)
-    print(o.build())
-    print(o.sizeof())
