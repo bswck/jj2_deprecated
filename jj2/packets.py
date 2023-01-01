@@ -9,6 +9,7 @@ Works with the _construct_ library behind the scenes.
 
 from __future__ import annotations
 
+import abc
 import contextlib
 import dataclasses
 import functools
@@ -22,7 +23,7 @@ import construct as cs
 from jj2.constants import DEFAULT_COMMUNICATION_ENCODING
 
 
-class ConstructFactory:
+class ConstructFactory(metaclass=abc.ABCMeta):
     @classmethod
     def construct(cls) -> cs.Construct:
         """Return a construct for self-serialization and self-deserialization."""
@@ -30,12 +31,6 @@ class ConstructFactory:
 
 
 _PACKET_FIELDS = '__packet_fields__'
-
-
-def field(construct_factory, **kwargs) -> dataclasses.Field:
-    metadata = kwargs.setdefault('metadata', {})
-    metadata.update(metadata={'construct_factory': construct_factory})
-    return dataclasses.field(**kwargs)
 
 
 def field_construct(packet_field, fallback_type_hint, cls_name=None):
@@ -87,23 +82,24 @@ class _TypingLib:
         return getattr(tp, '_nparams', None)
 
 
-def deduce_factory(hint, qualname=None):
-    if hint is None:
+def deduce_factory(python_type, qualname=None):
+    if python_type is None:
         raise ValueError(
             'cannot deduce construct factory without type hint'
             + (' in ' + qualname if qualname else '')
         )
+    tp = typing.get_origin(python_type)
+    args = list(typing.get_args(python_type))
     if (
-        isinstance(hint, (_Construct, _Subconstruct))
+        isinstance(python_type, (_Construct, _Subconstruct))
         or (
-            isinstance(hint, type)
-            and issubclass(hint, (ConstructFactory, PacketConstruct, PacketSubconstruct))
+            isinstance(python_type, type)
+            and not args  # for some reason abc subclass checks raise for generic types
+            and issubclass(python_type, ConstructFactory)
         )
     ):
-        return hint
-    tp = typing.get_origin(hint)
-    [*args] = typing.get_args(hint)
-    if tp and args:  # generic
+        return python_type
+    if tp and args:
         nparams = _TypingLib.get_nparams(tp)
         if nparams == -1:
             count = len(args)
@@ -112,19 +108,19 @@ def deduce_factory(hint, qualname=None):
                 count = None
         else:
             count = None
-        [*remapped] = map(deduce_factory, args)
+        factories = list(map(deduce_factory, args))
         if issubclass(tp, types.UnionType):
-            return _Construct(cs.Select(*remapped[::-1]))
+            return _Construct(cs.Select(*factories[::-1]))
         tp = PYTHON_GENERICS_AS_SUBCONSTRUCTS.get(tp, tp)
         if isinstance(tp, type) and issubclass(tp, ConstructFactory):
             return tp
         if not isinstance(tp, type):
-            return tp(remapped, count=count)
+            return tp(factories, count=count)
         raise TypeError(f'{tp.__name__} type as a packet field type is not supported')
-    basic_type = PYTHON_NON_GENERICS_AS_CONSTRUCTS.get(hint)
+    basic_type = PYTHON_NON_GENERICS_AS_CONSTRUCTS.get(python_type)
     if basic_type:
         return basic_type
-    raise TypeError(f'cannot use ambiguous non-factory type {hint} as a packet field')
+    raise TypeError(f'cannot use ambiguous non-factory type {python_type} as a packet field')
 
 
 field_construct_callbacks = {}
@@ -195,7 +191,7 @@ class _Generic:
         )
 
 
-class _Subconstruct:
+class _Subconstruct(ConstructFactory):
     def __init__(
             self,
             api_name,
@@ -210,9 +206,9 @@ class _Subconstruct:
         self._kwargs = kwargs or {}
         self._python_type = python_type
         if __debug__:
-            self._check_target_signature()
+            self._check_params()
 
-    def _check_target_signature(self):
+    def _check_params(self):
         signature = inspect.signature(self._do_construct)
         try:
             signature.bind(*self._args, **self._kwargs)
@@ -236,16 +232,16 @@ class _Subconstruct:
 
 
 def _construct_force_cast(python_type, construct):
-    if python_type and not getattr(construct, '_force_cast', False):
+    if python_type and not getattr(construct, '_implies_type_coercion', False):
         parsereport = construct._parsereport
-        construct._force_cast = True
+        construct._implies_type_coercion = True
         construct._parsereport = lambda stream, context, path: python_type(
             parsereport(stream, context, path)
         )
     return construct
 
 
-class _Construct:
+class _Construct(ConstructFactory):
     def __init__(self, construct, cast=None, python_type=None):
         self._construct = construct
         self._cast = cast
@@ -311,7 +307,7 @@ char = Int8sn
 unsigned_char = Int8un
 
 
-class PacketBase:
+class PacketBase(ConstructFactory, metaclass=abc.ABCMeta):
     def __class_getitem__(cls, args):
         if not isinstance(args, tuple):
             args = (args,)
@@ -322,17 +318,17 @@ class PacketBase:
         raise ValueError(f'{cls.__name__}[{", ".join(map(str, args))}] is undefined behaviour')
 
 
-def make_inner_of(inner_cls, wrapper, /, **kwds):
+def make_inner_of(inner_cls, wrapper_cls, /, **kwds):
     class BoundSubconstruct(PacketBase):
         def __init__(self, *args, **kwargs):
-            self._data_for_building = wrapper.init(inner_cls, self, *args, **kwargs)
+            self._data_for_building = wrapper_cls.init(inner_cls, self, *args, **kwargs)
 
         def _get_data_for_building(self):
             return self._data_for_building
 
         @classmethod
         def construct(cls):
-            return wrapper.subconstruct(subcon=ensure_construct(inner_cls), **kwds)
+            return wrapper_cls.subconstruct(subcon=ensure_construct(inner_cls), **kwds)
 
         def build(self, **context):
             construct = self.construct()
@@ -345,32 +341,27 @@ def make_inner_of(inner_cls, wrapper, /, **kwds):
         def load(cls, data, **kwargs):
             construct = cls.construct()
             context = construct.parse(data)
-            instance = wrapper.load(inner_cls, context, **kwargs)
+            instance = wrapper_cls.load(cls, inner_cls, context, **kwargs)
             return instance
 
         @classmethod
-        def make_inner_of(cls, outer_wrapper, /, **kwargs):
-            return make_inner_of(cls, outer_wrapper, **kwargs)
+        def make_inner_of(cls, outer_wrapper_cls, /, **kwargs):
+            return make_inner_of(cls, outer_wrapper_cls, **kwargs)
+
+        def __repr__(self):
+            return wrapper_cls.repr(self, inner_cls, **kwds)
 
     return BoundSubconstruct
 
 
-# @dataclasses.dataclass
 class PacketConstruct(PacketBase):
-    _private_entries: _PacketPrivateEntries
-    _construct_class: typing.ClassVar[type[cs.Construct]]
-    _skip_fields: typing.ClassVar[type[cs.Construct]] = []
-    _environment: typing.ClassVar[dict | None] = None
-    _subconstruct_wrapper: typing.ClassVar[PacketSubconstruct | None] = None
+    _construct_class = None  # type: typing.ClassVar[type[ConstructFactory] | None]
+    _environment = None  # type: typing.ClassVar[dict[str, typing.Any] | None]
+    _skip_fields = []  # type: typing.ClassVar[list[str]]
 
     @classmethod
     def _setup_environment(cls, declaration_env):
         env = {}
-        env.update(globals())
-        env.update(vars(cls))
-        for k in vars(PacketConstruct):
-            with contextlib.suppress(KeyError):
-                del env[k]
         if declaration_env:
             env.update(declaration_env)
         if cls._environment is None:
@@ -413,16 +404,19 @@ class PacketConstruct(PacketBase):
     def __bytes__(self):
         return self.build()
 
+    def __iter__(self):
+        yield from self._get_data_for_building()
+
     @classmethod
     def load(cls, data, **kwargs):
         construct = cls.construct()
-        context = construct.parse(data)
-        return cls._load_from_context(context, **kwargs)
+        args = construct.parse(data)
+        return cls._load_from_args(args, **kwargs)
 
     @classmethod
-    def _load_from_context(cls, context, **kwargs):
+    def _load_from_args(cls, args, **kwargs):
         private_entries = _PacketPrivateEntries()
-        init = private_entries.update(context)
+        init = private_entries.update(args)
         instance = cls(**init, **kwargs)
         private_entries.set_packet(instance)
         return instance
@@ -430,6 +424,73 @@ class PacketConstruct(PacketBase):
     @classmethod
     def make_inner_of(cls, wrapper_cls, /, **kwds):
         return make_inner_of(cls, wrapper_cls, **kwds)
+
+
+class Struct(PacketConstruct):
+    _construct_class = cs.Struct
+
+
+class BitStruct(PacketConstruct):
+    _construct_class = cs.BitStruct
+
+
+def field(name, construct_factory, **kwargs) -> dataclasses.Field:
+    metadata = kwargs.setdefault('metadata', {})
+    metadata.update(construct_factory=construct_factory)
+    f = dataclasses.field(**kwargs)
+    f.name = name
+    return f
+
+
+MISSING_EXTENDS = object()
+
+
+class Sequence(PacketConstruct):
+    _construct_class = cs.Sequence
+    fields = None
+
+    @classmethod
+    def _load_from_args(cls, args, **kwargs):
+        instance = cls(*args, **kwargs)
+        return instance
+
+    @classmethod
+    def _autocreate_field_name(cls, f, i):
+        return f'field_{i}'
+
+    def _get_data_for_building(self):
+        return list(super()._get_data_for_building().values())
+
+    def __getitem__(self, item):
+        return list(self)[item]
+
+    def __iter__(self):
+        yield from self._get_data_for_building()
+
+    def __init_subclass__(cls, extends=MISSING_EXTENDS, **env):
+        if extends is MISSING_EXTENDS:
+            extends = cls.__base__
+        super_fields = (
+            (getattr(extends, 'fields', None) or ())
+            if extends is not None else ()
+        )
+        fields = [*super_fields, *(getattr(cls, 'fields') or ())]
+
+        orig_annotations = cls.__annotations__
+        cls.__annotations__ = {
+            name: (
+                f.metadata.get('construct_factory') or f.type
+                if isinstance(f, dataclasses.Field) else f
+            )
+            for i, f in enumerate(fields, start=1)
+            if (name := getattr(f, 'name', cls._autocreate_field_name(f, i))) != 'fields'
+        }
+        env.update(vars(cls))
+
+        try:
+            super().__init_subclass__(**env)
+        finally:
+            cls.__annotations__ = orig_annotations
 
 
 class PacketSubconstruct(PacketBase):
@@ -456,8 +517,12 @@ class PacketSubconstruct(PacketBase):
         pass
 
     @staticmethod
-    def load(inner_cls, context, **kwargs):
+    def load(outer_cls, inner_cls, context, **kwargs):
         pass
+
+    @staticmethod
+    def repr(instance, inner_cls, **kwds):
+        return object.__repr__(instance)
 
     @classmethod
     def of(cls, packet=None, **kwargs):
@@ -466,29 +531,37 @@ class PacketSubconstruct(PacketBase):
         return packet.make_inner_of(cls, **kwargs)
 
 
-class Struct(PacketConstruct):
-    _construct_class = cs.Struct
-
-
 class _HomogeneousCollectionSubconstruct(PacketSubconstruct):
-    _python_type = list
-
     @staticmethod
     def init(inner_cls, instance, *inits):
-        return [
+        instance.args = [
             (
                 init if isinstance(init, inner_cls) else
                 (inner_cls(**init) if isinstance(init, dict) else inner_cls(*init))
-            )._get_data_for_building()
+            )
             for init in inits
         ]
+        return [member._get_data_for_building() for member in instance.args]
 
-    @classmethod
-    def load(cls, inner_cls, context, **kwargs):
-        return cls._python_type((
-            inner_cls._load_from_context(subcontext, **kwargs)
+    @staticmethod
+    def load(outer_cls, inner_cls, context, **kwargs):
+        return outer_cls(*(
+            inner_cls._load_from_args(subcontext, **kwargs)
             for subcontext in context
         ))
+
+    @classmethod
+    def repr(cls, instance, inner_cls, **kwds):
+        return (
+            cls.__name__
+            + ', '.join(
+                filter(None, (inner_cls.__name__, ', '.join(
+                    f'{key!s}={value!r}'
+                    for key, value in kwds.items()
+                )))
+            ).join('<>')
+            + ', '.join(map(repr, instance.args)).join('()')
+        )
 
 
 class Array(_HomogeneousCollectionSubconstruct):
@@ -512,10 +585,8 @@ class Prefixed(PacketSubconstruct):
 
     @staticmethod
     def map_kwargs(kwargs):
-        return {
-            'lengthfield': ensure_construct(kwargs.get('lengthfield')),
-            'includelength': kwargs.get('includelength', False)
-        }
+        kwargs.update(lengthfield=ensure_construct(kwargs.get('lengthfield')))
+        return kwargs
 
 
 class Rebuild(PacketSubconstruct):
@@ -565,7 +636,7 @@ if __name__ == '__main__':
         header: tuple[int, tuple[int, str]]
 
     # using array = Array<MyPacket, 2>;
-    array = Array.of(MyPacket, count=2)
+    array = GreedyRange.of(MyPacket)
 
     # instantiate the array
     pkt = array(MyPacket((1, (2, 'ez'))), MyPacket((3, (4, 'yo'))))
@@ -577,3 +648,14 @@ if __name__ == '__main__':
     # load from packet
     loaded = array.load(pickle)
     print(loaded)
+
+    class MySequence(Sequence):
+        fields = [
+            tuple[int, tuple[int, str]],
+            field('named_field', tuple[str])
+        ]
+
+    seq = MySequence((1, (6, 'es')), ('xd',))
+    print(seq)
+    print(bytes(seq))
+    print(MySequence.load(bytes(seq)))
