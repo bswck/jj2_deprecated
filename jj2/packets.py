@@ -222,7 +222,7 @@ class _Subconstruct(ConstructFactory):
             raise TypeError(
                 f'erroneous arguments passed to {self._api_name}[]\n'
                 f'Check help({self._do_construct.__module__}.{self._do_construct.__qualname__}) '
-                'for details.'
+                'for details on proper use.'
             ) from e
 
     def __call__(self, *args, **kwargs):
@@ -702,7 +702,7 @@ PYTHON_GENERICS_AS_SUBCONSTRUCTS = {
 
 
 if __name__ == '__main__':
-    arr_t = Default.of(LazyArray.of(int, count=2), value=[0, 0])
+    arr_t = Array.of(int)
     print(arr_t)
     o = arr_t(1, 2)
     print(o)
