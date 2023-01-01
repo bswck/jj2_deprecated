@@ -337,6 +337,9 @@ def make_inner_of(inner_cls, wrapper_cls, /, **kwds):
         def __bytes__(self):
             return self.build()
 
+        def __iter__(self):
+            yield from wrapper_cls.iter(self)
+
         @classmethod
         def load(cls, data, **kwargs):
             construct = cls.construct()
@@ -524,6 +527,10 @@ class PacketSubconstruct(PacketBase):
     def repr(instance, inner_cls, **kwds):
         return object.__repr__(instance)
 
+    @staticmethod
+    def iter(instance):
+        yield from instance._get_data_for_building()
+
     @classmethod
     def of(cls, packet=None, **kwargs):
         if packet is None:
@@ -534,14 +541,14 @@ class PacketSubconstruct(PacketBase):
 class _HomogeneousCollectionSubconstruct(PacketSubconstruct):
     @staticmethod
     def init(inner_cls, instance, *inits):
-        instance.args = [
+        instance._args = [
             (
                 init if isinstance(init, inner_cls) else
                 (inner_cls(**init) if isinstance(init, dict) else inner_cls(*init))
             )
             for init in inits
         ]
-        return [member._get_data_for_building() for member in instance.args]
+        return [member._get_data_for_building() for member in instance._args]
 
     @staticmethod
     def load(outer_cls, inner_cls, context, **kwargs):
@@ -560,8 +567,12 @@ class _HomogeneousCollectionSubconstruct(PacketSubconstruct):
                     for key, value in kwds.items()
                 )))
             ).join('<>')
-            + ', '.join(map(repr, instance.args)).join('()')
+            + ', '.join(map(repr, instance._args)).join('()')
         )
+
+    @staticmethod
+    def iter(instance):
+        yield from instance._args
 
 
 class Array(_HomogeneousCollectionSubconstruct):
@@ -628,34 +639,3 @@ PYTHON_GENERICS_AS_SUBCONSTRUCTS = {
     frozenset: _Generic(python_type=frozenset),
     tuple: _Generic(python_type=tuple),
 }
-
-
-if __name__ == '__main__':
-
-    class MyPacket(Struct):
-        header: tuple[int, tuple[int, str]]
-
-    # using array = Array<MyPacket, 2>;
-    array = GreedyRange.of(MyPacket)
-
-    # instantiate the array
-    pkt = array(MyPacket((1, (2, 'ez'))), MyPacket((3, (4, 'yo'))))
-
-    # serialize
-    pickle = bytes(pkt)
-    print(pickle)
-
-    # load from packet
-    loaded = array.load(pickle)
-    print(loaded)
-
-    class MySequence(Sequence):
-        fields = [
-            tuple[int, tuple[int, str]],
-            field('named_field', tuple[str])
-        ]
-
-    seq = MySequence((1, (6, 'es')), ('xd',))
-    print(seq)
-    print(bytes(seq))
-    print(MySequence.load(bytes(seq)))
