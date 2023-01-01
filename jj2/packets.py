@@ -655,7 +655,7 @@ class Default(PacketSubconstruct):
 
     @classmethod
     def init(cls, inner_cls, instance, *args, **kwargs):
-        wrapped = None
+        instance._wrapped = wrapped = None
         if args or kwargs:
             wrapped = super().init(inner_cls, instance, *args, **kwargs)
         return wrapped
