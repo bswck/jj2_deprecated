@@ -362,9 +362,12 @@ def make_inner_of(inner_cls, wrapper_cls, /, **kwds):
         @classmethod
         def load(cls, data, **kwargs):
             construct = cls.construct()
-            context = construct.parse(data)
-            instance = wrapper_cls.load(cls, inner_cls, context, **kwargs)
-            return instance
+            args = construct.parse(data)
+            return cls._load_from_args(args, **kwargs)
+
+        @classmethod
+        def _load_from_args(cls, args, **kwargs):
+            return wrapper_cls.load(cls, inner_cls, args, **kwargs)
 
         @classmethod
         def make_inner_of(cls, outer_wrapper_cls, /, **kwargs):
@@ -578,7 +581,9 @@ class _HomogeneousCollectionSubconstruct(PacketSubconstruct):
     @staticmethod
     def load(outer_cls, inner_cls, context, **kwargs):
         return outer_cls(*(
-            inner_cls._load_from_args(subcontext, **kwargs)
+            inner_cls(subcontext)
+            if isinstance(inner_cls, _Construct)
+            else inner_cls._load_from_args(subcontext, **kwargs)
             for subcontext in context
         ))
 
@@ -668,6 +673,3 @@ PYTHON_GENERICS_AS_SUBCONSTRUCTS = {
     frozenset: _Generic(python_type=frozenset),
     tuple: _Generic(python_type=tuple),
 }
-
-if __name__ == '__main__':
-    print(GreedyRange.of(Array.of(char, count=2))([1, 5], [12, 2], [3, 4]))
