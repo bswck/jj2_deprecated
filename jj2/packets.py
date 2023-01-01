@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import abc
 import contextlib
+import copy
 import dataclasses
 import functools
 import inspect
@@ -226,17 +227,19 @@ class _Subconstruct(ConstructFactory):
         return Array[size, self._do_construct]
 
     def construct(self):
-        return _construct_force_cast(
+        return _construct_coerce_type(
             self._python_type, self._do_construct(*self._args, **self._kwargs)
         )
 
 
-def _construct_force_cast(python_type, construct):
+def _construct_coerce_type(python_type, construct):
     if python_type and not getattr(construct, '_implies_type_coercion', False):
         parsereport = construct._parsereport
         construct._implies_type_coercion = True
-        construct._parsereport = lambda stream, context, path: python_type(
-            parsereport(stream, context, path)
+        construct._parsereport = lambda stream, context, path: (
+            python_type(result) if not isinstance(
+                result := parsereport(stream, context, path), python_type
+            ) else result
         )
     return construct
 
@@ -247,14 +250,30 @@ class _Construct(ConstructFactory):
         self._cast = cast
         self._python_type = python_type
 
+    @property
+    def type_name(self):
+        return self._python_type.__name__ if self._python_type else type(self._construct).__name__
+
     def construct(self):
-        return _construct_force_cast(self._python_type, self._construct)
+        return _construct_coerce_type(self._python_type, self._construct)
+
+    def make_inner_of(self, outer_wrapper_cls, /, **kwargs):
+        return make_inner_of(self, outer_wrapper_cls, **kwargs)
 
     def __call__(self, obj):
+        if self._python_type and isinstance(obj, self._python_type):
+            return obj
         try:
             return self._cast(obj)
-        except Exception:
-            raise TypeError(f'cannot cast {obj} to desired type') from None
+        except Exception as exc:
+            err = TypeError(
+                f'cannot cast {obj} to the desired type'
+                + (' ' + self._python_type.__name__.join('()') if self._python_type else '')
+            )
+            if self._cast:
+                raise err from exc
+            else:
+                raise err from None
 
     def __getitem__(self, size):
         return Array[size, self._construct]
@@ -263,44 +282,44 @@ class _Construct(ConstructFactory):
         return f'ConstructAPI({type(self._construct).__name__})'
 
 
-Int8sl = _Construct(cs.Int8sl)
-Int8sb = _Construct(cs.Int8sb)
-Int8sn = _Construct(cs.Int8sn)
-Int8ul = _Construct(cs.Int8ul, cast=ord)
-Int8ub = _Construct(cs.Int8ub, cast=ord)
-Int8un = _Construct(cs.Int8un, cast=ord)
+Int8sl = _Construct(cs.Int8sl, python_type=int)
+Int8sb = _Construct(cs.Int8sb, python_type=int)
+Int8sn = _Construct(cs.Int8sn, python_type=int)
+Int8ul = _Construct(cs.Int8ul, python_type=int, cast=ord)
+Int8ub = _Construct(cs.Int8ub, python_type=int, cast=ord)
+Int8un = _Construct(cs.Int8un, python_type=int, cast=ord)
 
-Int16sl = _Construct(cs.Int16sl)
-Int16sb = _Construct(cs.Int16sb)
-Int16sn = _Construct(cs.Int16sn)
-Int16ul = _Construct(cs.Int16ul, cast=ord)
-Int16ub = _Construct(cs.Int16ub, cast=ord)
-Int16un = _Construct(cs.Int16un, cast=ord)
+Int16sl = _Construct(cs.Int16sl, python_type=int)
+Int16sb = _Construct(cs.Int16sb, python_type=int)
+Int16sn = _Construct(cs.Int16sn, python_type=int)
+Int16ul = _Construct(cs.Int16ul, python_type=int, cast=ord)
+Int16ub = _Construct(cs.Int16ub, python_type=int, cast=ord)
+Int16un = _Construct(cs.Int16un, python_type=int, cast=ord)
 
-Int24sl = _Construct(cs.Int24sl)
-Int24sb = _Construct(cs.Int24sb)
-Int24sn = _Construct(cs.Int24sn)
-Int24ul = _Construct(cs.Int24ul)
-Int24ub = _Construct(cs.Int24ub)
-Int24un = _Construct(cs.Int24un)
+Int24sl = _Construct(cs.Int24sl, python_type=int)
+Int24sb = _Construct(cs.Int24sb, python_type=int)
+Int24sn = _Construct(cs.Int24sn, python_type=int)
+Int24ul = _Construct(cs.Int24ul, python_type=int)
+Int24ub = _Construct(cs.Int24ub, python_type=int)
+Int24un = _Construct(cs.Int24un, python_type=int)
 
-Int32sl = _Construct(cs.Int32sl)
-Int32sb = _Construct(cs.Int32sb)
-Int32sn = _Construct(cs.Int32sn)
-Int32ul = _Construct(cs.Int32ul)
-Int32ub = _Construct(cs.Int32ub)
-Int32un = _Construct(cs.Int32un)
+Int32sl = _Construct(cs.Int32sl, python_type=int)
+Int32sb = _Construct(cs.Int32sb, python_type=int)
+Int32sn = _Construct(cs.Int32sn, python_type=int)
+Int32ul = _Construct(cs.Int32ul, python_type=int)
+Int32ub = _Construct(cs.Int32ub, python_type=int)
+Int32un = _Construct(cs.Int32un, python_type=int)
 
-Int64sl = _Construct(cs.Int64sl)
-Int64sb = _Construct(cs.Int64sb)
-Int64sn = _Construct(cs.Int64sn)
-Int64ul = _Construct(cs.Int64ul)
-Int64ub = _Construct(cs.Int64ub)
-Int64un = _Construct(cs.Int64un)
+Int64sl = _Construct(cs.Int64sl, python_type=int)
+Int64sb = _Construct(cs.Int64sb, python_type=int)
+Int64sn = _Construct(cs.Int64sn, python_type=int)
+Int64ul = _Construct(cs.Int64ul, python_type=int)
+Int64ub = _Construct(cs.Int64ub, python_type=int)
+Int64un = _Construct(cs.Int64un, python_type=int)
 
-Float64l = _Construct(cs.Float64l)
-Float64b = _Construct(cs.Float64b)
-Float64n = _Construct(cs.Float64n)
+Float64l = _Construct(cs.Float64l, python_type=int)
+Float64b = _Construct(cs.Float64b, python_type=int)
+Float64n = _Construct(cs.Float64n, python_type=int)
 
 
 char = Int8sn
@@ -352,8 +371,9 @@ def make_inner_of(inner_cls, wrapper_cls, /, **kwds):
             return make_inner_of(cls, outer_wrapper_cls, **kwargs)
 
         def __repr__(self):
-            return wrapper_cls.repr(self, inner_cls, **kwds)
+            return wrapper_cls.repr(inner_cls, instance=self, **kwds)
 
+    BoundSubconstruct.__name__ = wrapper_cls.repr(inner_cls, **kwds)
     return BoundSubconstruct
 
 
@@ -458,7 +478,7 @@ class Sequence(PacketConstruct):
         return instance
 
     @classmethod
-    def _autocreate_field_name(cls, f, i):
+    def _autocreate_field_name(cls, _f, i):
         return f'field_{i}'
 
     def _get_data_for_building(self):
@@ -524,8 +544,8 @@ class PacketSubconstruct(PacketBase):
         pass
 
     @staticmethod
-    def repr(instance, inner_cls, **kwds):
-        return object.__repr__(instance)
+    def repr(inner_cls, instance=None, **kwds):
+        return object.__repr__(instance) if instance is not None else object.__repr__(inner_cls)
 
     @staticmethod
     def iter(instance):
@@ -543,11 +563,16 @@ class _HomogeneousCollectionSubconstruct(PacketSubconstruct):
     def init(inner_cls, instance, *inits):
         instance._args = [
             (
-                init if isinstance(init, inner_cls) else
-                (inner_cls(**init) if isinstance(init, dict) else inner_cls(*init))
+                init if (isinstance(inner_cls, type) and isinstance(init, inner_cls))
+                else (
+                    inner_cls(init) if isinstance(inner_cls, _Construct)
+                    else (inner_cls(**init) if isinstance(init, dict) else inner_cls(*init))
+                )
             )
             for init in inits
         ]
+        if isinstance(inner_cls, _Construct):
+            return copy.deepcopy(instance._args)
         return [member._get_data_for_building() for member in instance._args]
 
     @staticmethod
@@ -558,16 +583,20 @@ class _HomogeneousCollectionSubconstruct(PacketSubconstruct):
         ))
 
     @classmethod
-    def repr(cls, instance, inner_cls, **kwds):
+    def repr(cls, inner_cls, instance=None, **kwds):
         return (
             cls.__name__
             + ', '.join(
-                filter(None, (inner_cls.__name__, ', '.join(
-                    f'{key!s}={value!r}'
-                    for key, value in kwds.items()
-                )))
+                filter(None, (
+                    inner_cls.type_name
+                    if isinstance(inner_cls, _Construct)
+                    else inner_cls.__name__,
+                    ', '.join(
+                        f'{key!s}={value!r}'
+                        for key, value in kwds.items())
+                ))
             ).join('<>')
-            + ', '.join(map(repr, instance._args)).join('()')
+            + (', '.join(map(repr, instance._args)).join('()') if instance is not None else '')
         )
 
     @staticmethod
@@ -625,10 +654,10 @@ class Padded(PacketSubconstruct):
 
 
 PYTHON_NON_GENERICS_AS_CONSTRUCTS = {
-    int: _Construct(cs.Int32sl),
-    float: _Construct(cs.Float32l),
-    str: _Construct(cs.CString(DEFAULT_COMMUNICATION_ENCODING)),
-    bytes: _Construct(cs.GreedyBytes),
+    int: _Construct(cs.Int32sl, python_type=int),
+    float: _Construct(cs.Float32l, python_type=float),
+    str: _Construct(cs.CString(DEFAULT_COMMUNICATION_ENCODING), python_type=str),
+    bytes: _Construct(cs.GreedyBytes, python_type=bytes),
     bytearray: _Construct(cs.GreedyBytes, python_type=bytearray),
 }
 
@@ -639,3 +668,6 @@ PYTHON_GENERICS_AS_SUBCONSTRUCTS = {
     frozenset: _Generic(python_type=frozenset),
     tuple: _Generic(python_type=tuple),
 }
+
+if __name__ == '__main__':
+    print(GreedyRange.of(Array.of(char, count=2))([1, 5], [12, 2], [3, 4]))
