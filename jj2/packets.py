@@ -29,6 +29,12 @@ class ConstructFactory:
         """Return a construct for self-serialization and self-deserialization."""
         raise NotImplementedError
 
+    @classmethod
+    def sizeof(cls, **context) -> int:
+        """Compute size of a factorized construct."""
+        construct = cls.construct()
+        return construct.sizeof(**context)
+
 
 _PACKET_FIELDS = '__packet_fields__'
 
@@ -613,7 +619,8 @@ class _HomogeneousCollectionSubconstruct(PacketSubconstruct):
     @classmethod
     def repr(cls, inner_cls, instance=None, **kwds):
         return super().repr(inner_cls, **kwds) + (
-            ', '.join(map(repr, instance.__inner_packet__)).join('()') if instance is not None else ''
+            ', '.join(map(repr, instance.__inner_packet__)).join('()')
+            if instance is not None else ''
         )
 
     @staticmethod
@@ -697,12 +704,13 @@ PYTHON_GENERICS_AS_SUBCONSTRUCTS = {
 if __name__ == '__main__':
     arr_t = Default.of(LazyArray.of(int, count=2), value=[0, 0])
     print(arr_t)
-    i = arr_t(1, 2)
-    print(i)
-    pkt = bytes(i)
+    o = arr_t(1, 2)
+    print(o)
+    pkt = bytes(o)
     print(pkt)
-    il = arr_t.load(pkt)
-    print(il)
-    i = arr_t()
-    print(i)
-    print(i.build())
+    ol = arr_t.load(pkt)
+    print(ol)
+    o = arr_t()
+    print(o)
+    print(o.build())
+    print(o.sizeof())
