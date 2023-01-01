@@ -465,6 +465,10 @@ class _HomogeneousCollectionSubconstruct(PacketSubconstruct):
 class Array(_HomogeneousCollectionSubconstruct):
     _subconstruct_factory = cs.Array
 
+    @classmethod
+    def _class_getitem(cls, args):
+        return cls.subconstruct(args)
+
 
 class LazyArray(_HomogeneousCollectionSubconstruct):
     _subconstruct_factory = cs.LazyArray
