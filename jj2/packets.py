@@ -549,7 +549,7 @@ class PacketSubconstruct(PacketBase):
 
     @staticmethod
     def init(inner_cls, instance, *args, **kwargs):
-        instance._wrapped = wrapped = inner_cls(*args, **kwargs)
+        instance.__inner_packet__ = wrapped = inner_cls(*args, **kwargs)
         return wrapped if isinstance(inner_cls, _Construct) else wrapped._get_data_for_building()
 
     @staticmethod
@@ -570,7 +570,7 @@ class PacketSubconstruct(PacketBase):
                         for key, value in kwds.items())
                 ))
             )).join('<>')
-            + (f'({instance._wrapped})' if instance is not None else '')
+            + (f'({instance.__inner_packet__})' if instance is not None else '')
         )
 
     @staticmethod
@@ -587,7 +587,7 @@ class PacketSubconstruct(PacketBase):
 class _HomogeneousCollectionSubconstruct(PacketSubconstruct):
     @staticmethod
     def init(inner_cls, instance, *inits):
-        instance._wrapped = [
+        instance.__inner_packet__ = [
             (
                 init if (isinstance(inner_cls, type) and isinstance(init, inner_cls))
                 else (
@@ -598,8 +598,8 @@ class _HomogeneousCollectionSubconstruct(PacketSubconstruct):
             for init in inits
         ]
         if isinstance(inner_cls, _Construct):
-            return copy.deepcopy(instance._wrapped)
-        return [member._get_data_for_building() for member in instance._wrapped]
+            return copy.deepcopy(instance.__inner_packet__)
+        return [member._get_data_for_building() for member in instance.__inner_packet__]
 
     @staticmethod
     def load(outer_cls, inner_cls, args, **kwargs):
@@ -613,12 +613,12 @@ class _HomogeneousCollectionSubconstruct(PacketSubconstruct):
     @classmethod
     def repr(cls, inner_cls, instance=None, **kwds):
         return super().repr(inner_cls, **kwds) + (
-            ', '.join(map(repr, instance._wrapped)).join('()') if instance is not None else ''
+            ', '.join(map(repr, instance.__inner_packet__)).join('()') if instance is not None else ''
         )
 
     @staticmethod
     def iter(instance):
-        yield from instance._wrapped
+        yield from instance.__inner_packet__
 
 
 class Array(_HomogeneousCollectionSubconstruct):
@@ -655,7 +655,7 @@ class Default(PacketSubconstruct):
 
     @classmethod
     def init(cls, inner_cls, instance, *args, **kwargs):
-        instance._wrapped = wrapped = None
+        instance.__inner_packet__ = wrapped = None
         if args or kwargs:
             wrapped = super().init(inner_cls, instance, *args, **kwargs)
         return wrapped
