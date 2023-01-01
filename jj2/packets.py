@@ -172,38 +172,54 @@ def ensure_construct(obj):
     return _call_field_construct(deduce_factory(obj))
 
 
-@cs.singleton
 class _Generic:
+    def __init__(self, python_type=None):
+        self._python_type = python_type
+
     def __call__(self, args, *, count=None):
         if len(args) == 1:
             subcon = deduce_factory(*args)
         else:
             [*args] = map(ensure_construct, args)
             if len(set(args)) > 1:
-                return _Construct(cs.Sequence(*args))
+                return _Construct(cs.Sequence(*args), python_type=self._python_type)
             subcon = _Construct(args[0])
         if count is None:
-            return _Construct(cs.GreedyRange(_call_field_construct(subcon)))
-        return _Construct(cs.Array(count, _call_field_construct(subcon)))
+            return _Construct(
+                cs.GreedyRange(_call_field_construct(subcon)),
+                python_type=self._python_type
+            )
+        return _Construct(
+            cs.Array(count, _call_field_construct(subcon)),
+            python_type=self._python_type
+        )
 
 
 class _Subconstruct:
-    def __init__(self, api_name, construct, args=(), kwargs=None):
+    def __init__(
+            self,
+            api_name,
+            construct,
+            args=(),
+            kwargs=None,
+            python_type=None
+    ):
         self._api_name = api_name
-        self._construct = construct
+        self._do_construct = construct
         self._args = args
         self._kwargs = kwargs or {}
+        self._python_type = python_type
         if __debug__:
             self._check_target_signature()
 
     def _check_target_signature(self):
-        signature = inspect.signature(self._construct)
+        signature = inspect.signature(self._do_construct)
         try:
             signature.bind(*self._args, **self._kwargs)
         except TypeError as e:
             raise TypeError(
                 f'erroneous arguments passed to {self._api_name}[]\n'
-                f'Check help({self._construct.__module__}.{self._construct.__qualname__}) '
+                f'Check help({self._do_construct.__module__}.{self._do_construct.__qualname__}) '
                 'for details.'
             ) from e
 
@@ -211,19 +227,32 @@ class _Subconstruct:
         return self
 
     def __getitem__(self, size):
-        return Array[size, self._construct]
+        return Array[size, self._do_construct]
 
     def construct(self):
-        return self._construct(*self._args, **self._kwargs)
+        return _construct_force_cast(
+            self._python_type, self._do_construct(*self._args, **self._kwargs)
+        )
+
+
+def _construct_force_cast(python_type, construct):
+    if python_type and not getattr(construct, '_force_cast', False):
+        parsereport = construct._parsereport
+        construct._force_cast = True
+        construct._parsereport = lambda stream, context, path: python_type(
+            parsereport(stream, context, path)
+        )
+    return construct
 
 
 class _Construct:
-    def __init__(self, construct, cast=None):
+    def __init__(self, construct, cast=None, python_type=None):
         self._construct = construct
         self._cast = cast
+        self._python_type = python_type
 
     def construct(self):
-        return self._construct
+        return _construct_force_cast(self._python_type, self._construct)
 
     def __call__(self, obj):
         try:
@@ -518,14 +547,16 @@ PYTHON_NON_GENERICS_AS_CONSTRUCTS = {
     float: _Construct(cs.Float32l),
     str: _Construct(cs.CString(DEFAULT_COMMUNICATION_ENCODING)),
     bytes: _Construct(cs.GreedyBytes),
-    bytearray: _Construct(cs.GreedyBytes),
+    bytearray: _Construct(cs.GreedyBytes, python_type=bytearray),
 }
 
 
-PYTHON_GENERICS_AS_SUBCONSTRUCTS = dict.fromkeys(
-    {list, set, frozenset, tuple},
-    _Generic
-)
+PYTHON_GENERICS_AS_SUBCONSTRUCTS = {
+    list: _Generic(python_type=list),
+    set: _Generic(python_type=set),
+    frozenset: _Generic(python_type=frozenset),
+    tuple: _Generic(python_type=tuple),
+}
 
 
 if __name__ == '__main__':
