@@ -129,19 +129,16 @@ def deduce_factory(python_type, qualname=None):
     raise TypeError(f'cannot use ambiguous non-factory type {python_type} as a packet field')
 
 
-field_construct_callbacks = {}
-
-
-def _call_field_construct(obj):
+def _call_field_construct(f):
     try:
-        construct = obj.construct
+        construct = f.construct
     except AttributeError:
-        construct = field_construct_callbacks.get(id(obj))
+        construct = f.metadata.get('construct')
     ret = None
     if construct:
         ret = construct()
     if ret is None:
-        raise ValueError(f'{obj}.construct() is unknown or returned None')
+        raise ValueError(f'{f}.construct() is unknown or returned None')
     return ret
 
 
@@ -419,7 +416,8 @@ class PacketConstruct(PacketBase):
         for field in dataclasses.fields(cls):  # noqa
             if field.name in cls._skip_fields:
                 continue
-            field_construct_callbacks[id(field)] = functools.partial(
+            field.metadata = dict(field.metadata)
+            field.metadata['construct'] = functools.partial(
                 field_construct, field, type_hints.get(field.name)
             )
             packet_fields.append(field)
