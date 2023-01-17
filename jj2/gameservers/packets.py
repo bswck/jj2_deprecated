@@ -26,7 +26,7 @@ class PlusVersion(
 
 
 class GamePacket(Struct):
-    _skip_fields = ['plus']
+    _skip_fields = ['plus_version']
     plus_version: PlusVersion = (5, 9)
 
 
