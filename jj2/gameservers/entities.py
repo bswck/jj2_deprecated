@@ -20,9 +20,12 @@ class PlusVersion(
     @classmethod
     def _load(cls, buf, _c):
         if isinstance(buf, int):
-            return cls(minor=buf & 255, major=buf >> 16)
+            return cls(
+                minor=buf & 0xff,
+                major=buf >> 0x10
+            )
         return cls(*buf)
 
     def _data(self):
         major, minor = self
-        return major << 16 | minor
+        return major << 0x10 | minor
