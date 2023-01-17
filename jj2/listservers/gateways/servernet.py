@@ -204,7 +204,7 @@ _FUNC_MISSING = object()
 
 def job(
     action: str,
-    func: Callable | object | None = _FUNC_MISSING, *,
+    func: Callable | None = None, *,
     args: set[str] | None = None,
     defaults: dict[str, Any] | None = None,
     sync: bool | None = None
@@ -213,7 +213,7 @@ def job(
 
     def job_decorator(decorated_func: Callable):
         nonlocal func
-        if not decorated_func:
+        if func is None:
             func = decorated_func
         parameters = inspect.signature(func).parameters
         variadic_kwargs = any(
@@ -273,9 +273,6 @@ def job(
         )
         return wrapper
 
-    if func is None:
-        return job_decorator(lambda connection: None)
-    func = None
     return job_decorator
 
 
@@ -381,7 +378,7 @@ FRAGMENT_SYNCERS = {}
 
 
 def fragment_syncer(name):
-    return lambda fn: FRAGMENT_SYNCERS.update((name, fn)) or fn
+    return lambda fn: FRAGMENT_SYNCERS.update({name: fn}) or fn
 
 
 def sync_fragment(name, /, *args, **kwargs):

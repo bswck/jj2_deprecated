@@ -14,7 +14,7 @@ import typing
 import warnings
 import weakref
 
-from jj2.constants import DEFAULT_COMMUNICATION_ENCODING
+from jj2.constants import CHAT_ENCODING
 
 if typing.TYPE_CHECKING:
     from typing import Any
@@ -28,7 +28,7 @@ _AddressT = typing.Tuple[str, int]
 
 
 class BaseEndpointHandler:
-    MSG_ENCODING: ClassVar[str] = DEFAULT_COMMUNICATION_ENCODING
+    MSG_ENCODING: ClassVar[str] = CHAT_ENCODING
     IP_UNKNOWN: ClassVar[str] = '0.0.0.0'
     COMMUNICATION_BACKEND_FLAG: ClassVar[str] = '__communicates_as__'
     VALIDATION_BACKEND_FLAG: ClassVar[str] = '__validates_as__'

@@ -223,7 +223,7 @@ class GameServer:
     def __repr__(self):
         class_name = type(self).__name__
         addr, port, name = self.ip_address, self.port, self.name
-        return f'<{class_name} {addr=!r} {port=!s} {name=!r}>'
+        return f'<{class_name} [{self.clients}/{self.max_clients}] {addr=!r} {port=!s} {name=!r}>'
 
 
 @dataclasses.dataclass
