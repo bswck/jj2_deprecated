@@ -3,11 +3,15 @@ from constance import *
 
 from jj2.gameservers.entities import *
 
+#
+# class GamePacket(Struct):
+#     _skip_fields = ['plus_version']
+#     plus_version: PlusVersion = (5, 9)
 
-class GamePacket(Struct):
-    _skip_fields = ['plus_version']
-    plus_version: PlusVersion = (5, 9)
+
+# class GamePacketHeader(Struct):
+#     _skip_fields = ['plus_version']
+#     plus_version: PlusVersion[2] = ((5, 9), (5, 3))
 
 
-if __name__ == '__main__':
-    print(GamePacket([1, 0]))
+print(type(PlusVersion[2]))
