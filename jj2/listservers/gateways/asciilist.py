@@ -26,14 +26,16 @@ class ASCIIListClient(endpoints.TCPClient):
 class ASCIIListConnection(endpoints.ConnectionHandler):
     MSG_ENCODING = 'ASCII'
     SPLITTER = '\r\n'
+    servers: list
+    memory_isolated: bool
 
-    def __post_init__(self, servers=None, memory_isolated=False):
+    def configure(self, servers=None, memory_isolated=False):
         if servers is None:
             servers = []
         self.servers = servers
         self.memory_isolated = memory_isolated
 
-    @endpoints.communication_backend(ASCIIListServer)
+    @endpoints.service_actions(ASCIIListServer)
     async def send_list(self):
         logger.info(f'Sending ASCII server list to {self.address_string}')
 
@@ -45,7 +47,7 @@ class ASCIIListConnection(endpoints.ConnectionHandler):
         await self.message(''.join(server.asciilist_repr for server in servers))
         self.stop()
 
-    @endpoints.communication_backend(ASCIIListClient)
+    @endpoints.service_actions(ASCIIListClient)
     async def read_list(self):
         logger.info(f'Reading ASCII server list from {self.address_string}')
         servers = (await self.read()).strip().decode().split(self.SPLITTER)

@@ -33,14 +33,16 @@ class BinaryListClient(endpoints.TCPClient):
 class BinaryListConnection(endpoints.ConnectionHandler):
     payload_header: bytes = b'\x07LIST\x01\x01'
     endpoint_class: BinaryListServer
+    servers: list
+    memory_isolated: bool
 
-    def __post_init__(self, servers=None, memory_isolated=False):
+    def configure(self, servers=None, memory_isolated=False):
         if servers is None:
             servers = []
         self.servers = servers
         self.memory_isolated = memory_isolated
 
-    @endpoints.communication_backend(BinaryListServer)
+    @endpoints.service_actions(BinaryListServer)
     async def send_list(self):
         logger.info(f'Sending binary server list to {self.address_string}')
 
@@ -53,7 +55,7 @@ class BinaryListConnection(endpoints.ConnectionHandler):
         await self.send(payload)
         self.stop()
 
-    @endpoints.communication_backend(BinaryListClient)
+    @endpoints.service_actions(BinaryListClient)
     async def read_list(self):
         logger.info(f'Reading binary server list from {self.address_string}')
         servers = (await self.read()).strip()

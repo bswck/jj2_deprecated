@@ -19,18 +19,19 @@ class MOTDClient(endpoints.TCPClient):
 @MOTDClient.handler
 class MOTDConnection(endpoints.ConnectionHandler):
     MSG_ENCODING = 'ASCII'
+    motd: MessageOfTheDay
 
-    def __post_init__(self, motd=None):
+    def configure(self, motd=None):
         self.motd = motd or MessageOfTheDay()
 
-    @endpoints.communication_backend(MOTDServer)
+    @endpoints.service_actions(MOTDServer)
     async def send_motd(self):
         logger.info(f'Sending MOTD to {self.host}')
         motd = db.read_motd()
         await self.message(str(motd))
         self.stop()
 
-    @endpoints.communication_backend(MOTDClient)
+    @endpoints.service_actions(MOTDClient)
     async def read_motd(self):
         logger.info(f'Reading MOTD from {self.host}')
         self.motd.text = (await self.read()).decode().strip()
@@ -38,7 +39,7 @@ class MOTDConnection(endpoints.ConnectionHandler):
 
 
 def get_motd(*addresses, client_class=MOTDClient, setup_timeout=0.7, timeout=1):
-    client = client_class(handler_kwargs=dict(motd=(motd := MessageOfTheDay())))
+    client = client_class(config=dict(motd=(motd := MessageOfTheDay())))
     endpoints.start_race(client, *addresses, setup_timeout=setup_timeout, timeout=timeout)
     return motd
 

@@ -30,10 +30,10 @@ _AddressT = typing.Tuple[str, int]
 class BaseEndpointHandler:
     MSG_ENCODING: ClassVar[str] = CHAT_ENCODING
     IP_UNKNOWN: ClassVar[str] = '0.0.0.0'
-    COMMUNICATION_BACKEND_FLAG: ClassVar[str] = '__communicates_as__'
+    SERVICE_ACTIONS_BACKEND_FLAG: ClassVar[str] = '__communicates_as__'
     VALIDATION_BACKEND_FLAG: ClassVar[str] = '__validates_as__'
 
-    _communication_backends: ClassVar[functools.singledispatch]
+    _service_actions_backends: ClassVar[functools.singledispatch]
     _validation_backends: ClassVar[functools.singledispatch]
 
     _host: _IPAddressT
@@ -56,7 +56,7 @@ class BaseEndpointHandler:
         self._host = ipaddress.ip_address(self.IP_UNKNOWN)
         self._local_host = ipaddress.ip_address(self.IP_UNKNOWN)
 
-    def __post_init__(self, **kwargs):
+    def configure(self, **kwargs):
         pass
 
     @property
@@ -178,7 +178,7 @@ class BaseEndpointHandler:
         """
         pass
 
-    async def communicate(self, pool: HandlerPool | None = None):
+    async def service_actions(self, pool: HandlerPool | None = None):
         """
         A single frame in the connection life.
         This method is intended to interact with the connection I/O through write() or/and read().
@@ -189,15 +189,15 @@ class BaseEndpointHandler:
         pool : HandlerPool or None
             Connection pool instance that requested validation.
         """
-        callback = self._communication_backends(self.endpoint)
+        callback = self._service_actions_backends(self.endpoint)
         if callback is NotImplemented:
-            communicate = self.communicate_default
+            service_actions = self.service_actions_default
         else:
-            communicate = functools.partial(callback, self)
-        return await (communicate(pool) if pool else communicate())
+            service_actions = functools.partial(callback, self)
+        return await (service_actions(pool) if pool else service_actions())
 
     # noinspection PyUnusedLocal
-    async def communicate_default(self, pool: HandlerPool | None = None):
+    async def service_actions_default(self, pool: HandlerPool | None = None):
         """
         A single frame in the connection life.
         This method is intended to interact with the connection I/O through write() or/and read().
@@ -211,9 +211,9 @@ class BaseEndpointHandler:
         await self.data_loop()
 
     @classmethod
-    def communication_backend(cls, endpoint_class: type[Endpoint], method=None):
+    def service_actions_backend(cls, endpoint_class: type[Endpoint], method=None):
         """
-        Register communicate() implementation for given endpoint class (type).
+        Register service_actions() implementation for given endpoint class (type).
 
         Parameters
         ----------
@@ -221,8 +221,8 @@ class BaseEndpointHandler:
         method
         """
         if method is None:
-            return functools.partial(cls.communication_backend, endpoint_class)
-        cls._communication_backends.register(endpoint_class, lambda _: method)
+            return functools.partial(cls.service_actions_backend, endpoint_class)
+        cls._service_actions_backends.register(endpoint_class, lambda _: method)
         return method
 
     @classmethod
@@ -272,12 +272,12 @@ class BaseEndpointHandler:
 
     def __init_subclass__(cls):
         default_dispatch = (lambda _: NotImplemented)
-        cls._communication_backends = staticmethod(functools.singledispatch(default_dispatch))
+        cls._service_actions_backends = staticmethod(functools.singledispatch(default_dispatch))
         cls._validation_backends = staticmethod(functools.singledispatch(default_dispatch))
         for _, method in inspect.getmembers(cls):
-            communicates_as_endpoint_class = getattr(method, cls.COMMUNICATION_BACKEND_FLAG, None)
-            if communicates_as_endpoint_class:
-                cls.communication_backend(communicates_as_endpoint_class, method)
+            svc_actions_endpoint_class = getattr(method, cls.SERVICE_ACTIONS_BACKEND_FLAG, None)
+            if svc_actions_endpoint_class:
+                cls.service_actions_backend(svc_actions_endpoint_class, method)
             validates_as_endpoint_class = getattr(method, cls.VALIDATION_BACKEND_FLAG, None)
             if validates_as_endpoint_class:
                 cls.validation_backend(validates_as_endpoint_class, method)
@@ -294,8 +294,12 @@ class ConnectionHandler(BaseEndpointHandler):
         super().__init__(future, endpoint)
         self.reader = reader
         self.writer = writer
+
         sock = self.writer.get_extra_info('socket')
-        (local_host, local_port, *_), (host, port, *_) = sock.getsockname(), sock.getpeername()
+        (
+            (local_host, local_port, *sock_extras),
+            (host, port, *peer_extras)
+        ) = sock.getsockname(), sock.getpeername()
         self._host = ipaddress.ip_address(host)
         self._local_host = ipaddress.ip_address(local_host)
         self._port = port
@@ -433,16 +437,16 @@ class DatagramEndpointHandler(BaseEndpointHandler):
         await self.send_to(datagram.encode(self.MSG_ENCODING), addr)
 
 
-def communication_backend(endpoint_class: type[Endpoint], method=None):
+def service_actions(endpoint_class: type[Endpoint], method=None):
     if method is None:
-        return functools.partial(communication_backend, endpoint_class)
-    setattr(method, BaseEndpointHandler.COMMUNICATION_BACKEND_FLAG, endpoint_class)
+        return functools.partial(service_actions, endpoint_class)
+    setattr(method, BaseEndpointHandler.SERVICE_ACTIONS_BACKEND_FLAG, endpoint_class)
     return method
 
 
-def validation_backend(endpoint_class: type[Endpoint], method=None):
+def validator(endpoint_class: type[Endpoint], method=None):
     if method is None:
-        return functools.partial(validation_backend, endpoint_class)
+        return functools.partial(validator, endpoint_class)
     setattr(method, BaseEndpointHandler.VALIDATION_BACKEND_FLAG, endpoint_class)
     return method
 
@@ -494,8 +498,8 @@ class HandlerPool:
         self.bind_future()
         self.handlers.add(handler)
         communicate = (
-            handler.communicate if handler.endpoint.pool is self
-            else functools.partial(handler.communicate, self)
+            handler.service_actions if handler.endpoint.pool is self
+            else functools.partial(handler.service_actions, self)
         )
 
         while handler.is_alive and not (self.future.done() or self.future.cancelled()):
@@ -555,7 +559,7 @@ class Endpoint:
         self,
         pool: HandlerPool | None = None,
         wrapper_class: type[ConnectionHandler] | None = None,
-        handler_kwargs: dict | None = None,
+        config: dict | None = None,
         **endpoint_kwargs: Any
     ):
         if pool is None:
@@ -564,7 +568,7 @@ class Endpoint:
 
         self.handlers: list[wrapper_class] = []
         self.endpoint_kwargs = endpoint_kwargs
-        self.handler_kwargs = handler_kwargs or {}
+        self.config = config or {}
 
         if wrapper_class:
             self.handler_class = wrapper_class
@@ -579,7 +583,7 @@ class Endpoint:
             *args: Any, **kwargs: Any
     ) -> handler_class:
         handler = self.handler_class(future, self, *args, **kwargs)
-        handler.__post_init__(**self.handler_kwargs)
+        handler.configure(**self.config)
         self.handlers.append(handler)
         return handler
 
@@ -727,7 +731,7 @@ class Endpoint:
 
 
 class TCPServer(Endpoint):
-    default_host = '127.0.0.1'
+    default_host = '0.0.0.0'
 
     async def begin_endpoint(self, host, port, **endpoint_kwargs):
         endpoint_kwargs.update(host=host, port=port)
@@ -791,7 +795,7 @@ class UDPClient(UDPEndpoint):
 
 class UDPServer(UDPEndpoint):
     use_local_addr = True
-    default_host = '127.0.0.1'
+    default_host = '0.0.0.0'
 
 
 # Recipes

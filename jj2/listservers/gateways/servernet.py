@@ -154,7 +154,7 @@ class ServerNetHandler(endpoints.ConnectionHandler):
 
         self.job = job_object
 
-    async def communicate(self, pool=None):
+    async def service_actions(self, pool=None):
         await self.attempt_read()
         payload = self.attempt_decode()
         if self.read_attempts > self.MAX_READ_ATTEMPTS:

@@ -1,17 +1,13 @@
-"""Packet building and parsing routines with constance."""
-from constance import *
+"""Packet building and parsing routines with bitbin."""
+import bitbin as bb
 
 from jj2.gameservers.entities import *
 
-#
-# class GamePacket(Struct):
-#     _skip_fields = ['plus_version']
-#     plus_version: PlusVersion = (5, 9)
+
+class GamePacket(bb.Struct):
+    packet_id: bb.Switch[int]
+    data: bytes
 
 
-# class GamePacketHeader(Struct):
-#     _skip_fields = ['plus_version']
-#     plus_version: PlusVersion[2] = ((5, 9), (5, 3))
 
 
-print(type(PlusVersion[2]))
