@@ -488,7 +488,7 @@ class HandlerPool:
             for handler in handlers
         ))
 
-    def end(self):
+    def die(self):
         self.future.set_result(None)
 
     async def run(self, handler):
@@ -497,14 +497,14 @@ class HandlerPool:
 
         self.bind_future()
         self.handlers.add(handler)
-        communicate = (
+        run_actions = (
             handler.service_actions if handler.endpoint.pool is self
             else functools.partial(handler.service_actions, self)
         )
 
         while handler.is_alive and not (self.future.done() or self.future.cancelled()):
             try:
-                await communicate()
+                await run_actions()
             except Exception:
                 await handler.endpoint.on_error()
                 handler.stop()
@@ -512,7 +512,7 @@ class HandlerPool:
                 if not handler.is_alive:
                     self.handlers.remove(handler)
                     if not self.handlers:
-                        self.end()
+                        self.die()
                     break
 
     def task(self, task: typing.Coroutine):

@@ -63,7 +63,7 @@ class ASCIIListConnection(endpoints.ConnectionHandler):
 
 
 def get_asciilist(*addresses, client_class=ASCIIListClient, setup_timeout=0.7, timeout=1):
-    client = client_class(handler_kwargs=dict(servers=(servers := [])))
+    client = client_class(config=dict(servers=(servers := [])))
     endpoints.start_race(client, *addresses, setup_timeout=setup_timeout, timeout=timeout)
     return servers
 
